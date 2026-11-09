@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "846386476048",
+    "project_id": "turisapp-79f3e",
+    "storage_bucket": "turisapp-79f3e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:846386476048:android:f65a8b8a4f2dda0a9cc695",
+        "android_client_info": {
+          "package_name": "com.x_christo_x.TurisApp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDgEYZfUGwEjUvkPV44B7tDux77WI4SSUI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
