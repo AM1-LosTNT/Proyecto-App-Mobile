@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -28,6 +29,17 @@ class TurisApp extends StatelessWidget {
         title: 'TurisApp',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
+        locale: const Locale('es', 'BO'),
+        supportedLocales: const [
+          Locale('es', 'BO'),
+          Locale('es'),
+          Locale('en'),
+        ],
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
         home: const AuthGate(),
       ),
     );

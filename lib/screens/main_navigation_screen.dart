@@ -3,6 +3,7 @@ import '../theme/app_theme.dart';
 import 'home/home_screen.dart';
 import 'map/map_screen.dart';
 import 'favorites/favorites_screen.dart';
+import 'weather/weather_screen.dart';
 import 'profile/profile_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
@@ -24,12 +25,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       HomeScreen(
         onProfileTap: () {
           setState(() {
-            _currentIndex = 3; // Ir a la pestaña de perfil
+            _currentIndex = 4; // Ir a la pestaña de perfil
           });
         },
       ),
       const MapScreen(),
       const FavoritesScreen(),
+      const WeatherScreen(),
       const ProfileScreen(),
     ];
   }
@@ -41,7 +43,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         index: _currentIndex,
         children: _screens,
       ),
-      // Barra de navegación inferior que replica exactamente los iconos de los bocetos
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: Colors.white,
@@ -55,7 +56,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         ),
         child: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             child: BottomNavigationBar(
               currentIndex: _currentIndex,
               elevation: 0,
@@ -63,8 +64,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
               type: BottomNavigationBarType.fixed,
               selectedItemColor: AppTheme.primaryColor,
               unselectedItemColor: Colors.grey.shade400,
-              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-              unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.normal, fontSize: 11),
+              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+              unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.normal, fontSize: 10),
               onTap: (index) {
                 setState(() {
                   _currentIndex = index;
@@ -85,6 +86,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
                   icon: Icon(Icons.bookmark_outline_rounded),
                   activeIcon: Icon(Icons.bookmark_rounded),
                   label: 'Guardados',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.wb_sunny_outlined),
+                  activeIcon: Icon(Icons.wb_sunny_rounded),
+                  label: 'Clima',
                 ),
                 BottomNavigationBarItem(
                   icon: Icon(Icons.person_outline_rounded),

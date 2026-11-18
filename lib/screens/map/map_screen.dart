@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../models/place_model.dart';
 import '../../providers/app_state.dart';
 import '../../services/location_service.dart';
+import '../../services/weather_service.dart';
 import '../../theme/app_theme.dart';
 import '../details/details_screen.dart';
 import '../route/route_screen.dart';
@@ -28,8 +29,24 @@ class _MapScreenState extends State<MapScreen> {
   LatLng? _myLocation;
   bool _locating = false;
   bool _showResults = false;
+  double? _currentTemp;
 
   static const LatLng _santaCruz = LatLng(-17.7833, -63.1821);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentWeather();
+  }
+
+  Future<void> _loadCurrentWeather() async {
+    final weather = await WeatherService.fetchForecast();
+    if (mounted && weather != null) {
+      setState(() {
+        _currentTemp = weather.current.temperature;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -114,35 +131,67 @@ class _MapScreenState extends State<MapScreen> {
         final markerIcon = _markerIcon(destino.tipo);
         return Marker(
           point: destino.ubicacion,
-          width: isSelected ? 56 : 46,
-          height: isSelected ? 56 : 46,
+          width: isSelected ? 64 : 52,
+          height: isSelected ? 72 : 60,
           child: GestureDetector(
             onTap: () {
               setState(() => _selectedDestino = destino);
               _mapController.move(destino.ubicacion, 15.5);
             },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              decoration: BoxDecoration(
-                color: markerColor,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: Colors.white,
-                  width: isSelected ? 3.5 : 2.5,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  padding: EdgeInsets.all(isSelected ? 6 : 4),
+                  decoration: BoxDecoration(
+                    color: markerColor,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.white,
+                      width: isSelected ? 3.0 : 2.0,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        blurRadius: 6,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    markerIcon,
+                    color: Colors.white,
+                    size: isSelected ? 22 : 18,
+                  ),
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.3),
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
+                if (_currentTemp != null) ...[
+                  const SizedBox(height: 2),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300, width: 0.8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.15),
+                          blurRadius: 3,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    child: Text(
+                      '${_currentTemp!.toStringAsFixed(0)}°C',
+                      style: const TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
                   ),
                 ],
-              ),
-              child: Icon(
-                markerIcon,
-                color: Colors.white,
-                size: isSelected ? 28 : 22,
-              ),
+              ],
             ),
           ),
         );

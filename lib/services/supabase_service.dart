@@ -2,8 +2,10 @@ import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../core/app_error.dart';
 import '../models/micro_route.dart';
 import '../models/place_model.dart';
+import '../models/reserva.dart';
 import '../models/review_model.dart';
 import '../models/user_profile.dart';
 
@@ -386,75 +388,211 @@ class SupabaseService {
   // ==========================================
   // RESERVAS
   // ==========================================
+  /// Crea una solicitud de reserva en estado "En espera".
+  ///
+  /// El negocio es quien decide si la acepta o la rechaza.
   Future<void> crearReserva({
     required String idDestino,
-    required String fechaReserva,
+    required DateTime fechaHora,
     required int cantidadPersonas,
     required double precioUnitario,
     required double total,
   }) async {
     final user = currentUser;
-    if (user == null) throw 'Debes iniciar sesión para reservar.';
+    if (user == null) {
+      throw const AppMessageException(
+        'Debes iniciar sesión para realizar una reserva.',
+      );
+    }
+    if (idDestino.trim().isEmpty) {
+      throw const AppMessageException(
+        'No pudimos identificar el lugar. Vuelve a intentarlo.',
+      );
+    }
+    if (fechaHora.isBefore(DateTime.now())) {
+      throw const AppMessageException(
+        'La fecha y la hora de la reserva deben ser posteriores al momento actual.',
+      );
+    }
+    if (cantidadPersonas < 1) {
+      throw const AppMessageException(
+        'Selecciona al menos una persona para la reserva.',
+      );
+    }
+    if (precioUnitario < 0 || total < 0) {
+      throw const AppMessageException(
+        'El precio de la reserva no es válido.',
+      );
+    }
 
-    await client.from('reservas').insert({
+    final fecha = _fechaCorta(fechaHora);
+    final hora = _horaCorta(fechaHora);
+
+    final base = <String, dynamic>{
       'id_destino': idDestino,
       'id_turista': user.id,
-      'fecha_reserva': fechaReserva,
       'cantidad_personas': cantidadPersonas,
       'precio_unitario': precioUnitario,
       'total': total,
-      'estado': 'Confirmada',
+    };
+
+    try {
+      await client.from('reservas').insert({
+        ...base,
+        'fecha_reserva': fecha,
+        'hora_reserva': hora,
+        'estado': ReservationStatus.pendiente.dbValue,
+      });
+      return;
+    } on PostgrestException catch (e) {
+      // Compatibilidad con bases de datos que aún no tienen la migración de
+      // reservas: se guarda la hora dentro de fecha_reserva.
+      if (!_faltaColumna(e, 'hora_reserva') && !_estadoNoPermitido(e)) {
+        rethrow;
+      }
+    }
+
+    await client.from('reservas').insert({
+      ...base,
+      'fecha_reserva': '${fecha}T$hora:00',
+      'estado': 'Pendiente',
     });
   }
 
-  Future<List<Map<String, dynamic>>> getMisReservas() async {
+  Future<List<Reserva>> getMisReservas() async {
     final user = currentUser;
-    if (user == null) return [];
+    if (user == null) {
+      throw const AppMessageException(
+        'Debes iniciar sesión para ver tus reservas.',
+      );
+    }
+
+    final data = await client
+        .from('reservas')
+        .select('*, destinos_lugares(nombre, imagen_principal, direccion)')
+        .eq('id_turista', user.id)
+        .order('created_at', ascending: false);
+
+    return (data as List)
+        .map((row) => Reserva.fromMap(row as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<Reserva>> getReservasNegocio(String ownerId) async {
+    final data = await client
+        .from('reservas')
+        .select(
+            '*, destinos_lugares!inner(nombre, imagen_principal, direccion, id_usuario), usuarios(nombre, email, telefono)')
+        .eq('destinos_lugares.id_usuario', ownerId)
+        .order('created_at', ascending: false);
+
+    return (data as List)
+        .map((row) => Reserva.fromMap(row as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<Reserva>> getAllReservas() async {
+    final data = await client
+        .from('reservas')
+        .select(
+            '*, destinos_lugares(nombre, imagen_principal, direccion, id_usuario), usuarios(nombre, email, telefono)')
+        .order('created_at', ascending: false);
+
+    return (data as List)
+        .map((row) => Reserva.fromMap(row as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Cambia el estado de una reserva. Solo el negocio dueño del lugar o un
+  /// administrador deberían poder hacerlo (lo controlan las políticas de la
+  /// base de datos).
+  Future<void> updateReservaEstado(
+    String id,
+    ReservationStatus estado, {
+    String? motivoRechazo,
+  }) async {
+    if (id.trim().isEmpty) {
+      throw const AppMessageException(
+        'No pudimos identificar la reserva. Actualiza la pantalla e inténtalo de nuevo.',
+      );
+    }
+
+    final motivo = estado == ReservationStatus.rechazada
+        ? (motivoRechazo ?? '').trim()
+        : null;
+
     try {
-      final data = await client
+      await client.from('reservas').update({
+        'estado': estado.dbValue,
+        if (motivo != null) 'motivo_rechazo': motivo,
+      }).eq('id', id);
+      return;
+    } on PostgrestException catch (e) {
+      final sinMotivo = _faltaColumna(e, 'motivo_rechazo');
+      if (!sinMotivo && !_estadoNoPermitido(e)) rethrow;
+
+      final legacy = _estadoLegacy(estado);
+      if (legacy == null) {
+        throw const AppMessageException(
+          'La base de datos necesita la actualización de reservas para usar este estado. Contacta al administrador.',
+        );
+      }
+
+      await client
           .from('reservas')
-          .select('*, destinos_lugares(nombre, imagen_principal, direccion)')
-          .eq('id_turista', user.id)
-          .order('created_at', ascending: false);
-      return (data as List).cast<Map<String, dynamic>>();
-    } catch (_) {
-      return [];
+          .update({'estado': legacy}).eq('id', id);
     }
   }
 
-  Future<List<Map<String, dynamic>>> getReservasNegocio(String ownerId) async {
-    try {
-      final data = await client
-          .from('reservas')
-          .select(
-              '*, destinos_lugares!inner(nombre, imagen_principal, id_usuario), usuarios(nombre, email, telefono)')
-          .eq('destinos_lugares.id_usuario', ownerId)
-          .order('created_at', ascending: false);
-      return (data as List).cast<Map<String, dynamic>>();
-    } catch (_) {
-      return [];
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> getAllReservas() async {
-    try {
-      final data = await client
-          .from('reservas')
-          .select(
-              '*, destinos_lugares(nombre, imagen_principal, id_usuario), usuarios(nombre, email, telefono)')
-          .order('created_at', ascending: false);
-      return (data as List).cast<Map<String, dynamic>>();
-    } catch (_) {
-      return [];
-    }
-  }
-
-  Future<void> updateReservaEstado(String id, String estado) async {
-    await client.from('reservas').update({'estado': estado}).eq('id', id);
-  }
+  Future<void> cancelarReserva(String id) =>
+      updateReservaEstado(id, ReservationStatus.cancelada);
 
   Future<void> deleteReserva(String id) async {
+    if (id.trim().isEmpty) {
+      throw const AppMessageException(
+        'No pudimos identificar la reserva que deseas eliminar.',
+      );
+    }
     await client.from('reservas').delete().eq('id', id);
+  }
+
+  static String _fechaCorta(DateTime date) {
+    final month = date.month.toString().padLeft(2, '0');
+    final day = date.day.toString().padLeft(2, '0');
+    return '${date.year}-$month-$day';
+  }
+
+  static String _horaCorta(DateTime date) {
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+
+  static bool _faltaColumna(PostgrestException error, String column) {
+    final message = error.message.toLowerCase();
+    return error.code == 'PGRST204' ||
+        (message.contains(column.toLowerCase()) &&
+            (message.contains('column') || message.contains('could not find')));
+  }
+
+  static bool _estadoNoPermitido(PostgrestException error) {
+    return error.code == '23514' ||
+        error.message.toLowerCase().contains('reservas_estado_check');
+  }
+
+  static String? _estadoLegacy(ReservationStatus estado) {
+    switch (estado) {
+      case ReservationStatus.pendiente:
+        return 'Pendiente';
+      case ReservationStatus.aceptada:
+        return 'Confirmada';
+      case ReservationStatus.completada:
+        return 'Completada';
+      case ReservationStatus.cancelada:
+        return 'Cancelada';
+      case ReservationStatus.rechazada:
+        return null;
+    }
   }
 
   // ==========================================

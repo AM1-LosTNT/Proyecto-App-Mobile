@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_error.dart';
+import '../../models/reserva.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/app_feedback.dart';
+import '../../widgets/reservation_status_chip.dart';
 
 class MyReservationsScreen extends StatefulWidget {
   const MyReservationsScreen({super.key});
@@ -12,8 +16,10 @@ class MyReservationsScreen extends StatefulWidget {
 
 class _MyReservationsScreenState extends State<MyReservationsScreen> {
   final _service = SupabaseService();
-  List<Map<String, dynamic>> _reservas = [];
+  List<Reserva> _reservas = [];
+  final Set<String> _procesando = {};
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -22,182 +28,329 @@ class _MyReservationsScreenState extends State<MyReservationsScreen> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
-    final data = await _service.getMisReservas();
-    if (!mounted) return;
-    setState(() {
-      _reservas = data;
-      _loading = false;
-    });
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+
+    try {
+      final data = await _service.getMisReservas();
+      if (!mounted) return;
+      setState(() {
+        _reservas = data;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = friendlyError(
+          e,
+          fallback:
+              'No pudimos cargar tus reservas. Revisa tu conexión e inténtalo de nuevo.',
+        );
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _cancelar(Reserva reserva) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Cancelar reserva'),
+        content: Text(
+          '¿Deseas cancelar tu reserva en "${reserva.destinoNombre}" para el '
+          '${reserva.fechaHoraTexto}? El negocio verá que la cancelaste.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Volver'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sí, cancelar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    setState(() => _procesando.add(reserva.id));
+    try {
+      await _service.cancelarReserva(reserva.id);
+      await _load();
+      if (!mounted) return;
+      AppFeedback.success(context, 'Tu reserva fue cancelada correctamente.');
+    } catch (e) {
+      if (!mounted) return;
+      AppFeedback.errorFrom(
+        context,
+        e,
+        fallback:
+            'No se pudo cancelar la reserva. Revisa tu conexión e inténtalo de nuevo.',
+      );
+    } finally {
+      if (mounted) setState(() => _procesando.remove(reserva.id));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Mis reservas')),
+      appBar: AppBar(
+        title: const Text('Mis reservas'),
+        actions: [
+          IconButton(
+            tooltip: 'Actualizar',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
       body: RefreshIndicator(
         onRefresh: _load,
         color: AppTheme.primaryColor,
-        child: _loading
-            ? const Center(
-                child: CircularProgressIndicator(color: AppTheme.primaryColor))
-            : _reservas.isEmpty
-                ? ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    children: [
-                      SizedBox(height: MediaQuery.sizeOf(context).height * 0.18),
-                      Icon(Icons.receipt_long_outlined,
-                          size: 72, color: Colors.grey.shade400),
-                      const SizedBox(height: 14),
-                      const Text(
-                        'Todavía no tienes reservas',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            fontSize: 17, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        'Cuando reserves un lugar aparecerá aquí.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            fontSize: 13, color: AppTheme.textSecondary),
-                      ),
-                    ],
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _reservas.length,
-                    itemBuilder: (context, index) {
-                      final reserva = _reservas[index];
-                      final destino = reserva['destinos_lugares'] as Map?;
-                      final nombre =
-                          destino?['nombre']?.toString() ?? 'Lugar reservado';
-                      final imagen =
-                          destino?['imagen_principal']?.toString() ?? '';
-                      final estado =
-                          reserva['estado']?.toString() ?? 'Confirmada';
-                      final total =
-                          (reserva['total'] as num?)?.toDouble() ?? 0.0;
-                      final personas =
-                          (reserva['cantidad_personas'] as num?)?.toInt() ?? 1;
-                      final fecha = reserva['fecha_reserva']?.toString() ?? '';
+        child: _buildBody(),
+      ),
+    );
+  }
 
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16)),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Row(
-                            children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(12),
-                                child: imagen.isEmpty
-                                    ? Container(
-                                        width: 64,
-                                        height: 64,
-                                        color: AppTheme.primaryColor
-                                            .withValues(alpha: 0.12),
-                                        child: const Icon(
-                                            Icons.landscape_rounded,
-                                            color: AppTheme.primaryColor),
-                                      )
-                                    : Image.network(
-                                        imagen,
-                                        width: 64,
-                                        height: 64,
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) => Container(
-                                          width: 64,
-                                          height: 64,
-                                          color: AppTheme.primaryColor
-                                              .withValues(alpha: 0.12),
-                                          child: const Icon(
-                                              Icons.landscape_rounded,
-                                              color: AppTheme.primaryColor),
-                                        ),
-                                      ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      nombre,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 15),
-                                    ),
-                                    const SizedBox(height: 3),
-                                    Text(
-                                      'Fecha: $fecha · $personas personas',
-                                      style: const TextStyle(
-                                          fontSize: 12,
-                                          color: AppTheme.textSecondary),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Row(
-                                      children: [
-                                        _StatusBadge(estado: estado),
-                                        const Spacer(),
-                                        Text(
-                                          'Bs. ${total.toStringAsFixed(2)}',
-                                          style: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              color: AppTheme.primaryColor),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
+  Widget _buildBody() {
+    if (_loading) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppTheme.primaryColor),
+      );
+    }
+
+    if (_error != null) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(28),
+        children: [
+          SizedBox(height: MediaQuery.sizeOf(context).height * 0.16),
+          const Icon(Icons.cloud_off_rounded,
+              size: 64, color: AppTheme.textSecondary),
+          const SizedBox(height: 14),
+          const Text(
+            'No pudimos cargar tus reservas',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _error!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 18),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: _load,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
+            ),
+          ),
+        ],
+      );
+    }
+
+    if (_reservas.isEmpty) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          SizedBox(height: MediaQuery.sizeOf(context).height * 0.16),
+          Icon(Icons.receipt_long_outlined,
+              size: 72, color: Colors.grey.shade400),
+          const SizedBox(height: 14),
+          const Text(
+            'Todavía no tienes reservas',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Cuando solicites una reserva aparecerá aquí con su estado.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+          ),
+        ],
+      );
+    }
+
+    return ListView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(16),
+      itemCount: _reservas.length,
+      itemBuilder: (context, index) {
+        final reserva = _reservas[index];
+        return _ReservaCard(
+          reserva: reserva,
+          procesando: _procesando.contains(reserva.id),
+          onCancel: () => _cancelar(reserva),
+        );
+      },
+    );
+  }
+}
+
+class _ReservaCard extends StatelessWidget {
+  final Reserva reserva;
+  final bool procesando;
+  final VoidCallback onCancel;
+
+  const _ReservaCard({
+    required this.reserva,
+    required this.procesando,
+    required this.onCancel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final estado = reserva.estado;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: reserva.destinoImagen.isEmpty
+                      ? Container(
+                          width: 64,
+                          height: 64,
+                          color: AppTheme.primaryColor.withValues(alpha: 0.12),
+                          child: const Icon(Icons.landscape_rounded,
+                              color: AppTheme.primaryColor),
+                        )
+                      : Image.network(
+                          reserva.destinoImagen,
+                          width: 64,
+                          height: 64,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 64,
+                            height: 64,
+                            color:
+                                AppTheme.primaryColor.withValues(alpha: 0.12),
+                            child: const Icon(Icons.landscape_rounded,
+                                color: AppTheme.primaryColor),
                           ),
                         ),
-                      );
-                    },
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        reserva.destinoNombre,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      const SizedBox(height: 6),
+                      ReservationStatusChip(status: estado),
+                    ],
                   ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _InfoRow(
+              icon: Icons.event_rounded,
+              text: reserva.fechaHoraTexto,
+            ),
+            const SizedBox(height: 4),
+            _InfoRow(
+              icon: Icons.people_alt_outlined,
+              text: reserva.personasTexto,
+            ),
+            if (estado == ReservationStatus.pendiente ||
+                estado == ReservationStatus.rechazada) ...[
+              const SizedBox(height: 8),
+              Text(
+                estado == ReservationStatus.rechazada &&
+                        reserva.motivoRechazo.isNotEmpty
+                    ? 'Motivo del negocio: ${reserva.motivoRechazo}'
+                    : estado.description,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: estado == ReservationStatus.rechazada
+                      ? Colors.redAccent
+                      : AppTheme.textSecondary,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Text(
+                  reserva.totalTexto,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.primaryColor,
+                    fontSize: 15,
+                  ),
+                ),
+                const Spacer(),
+                if (estado.puedeCancelarTurista)
+                  TextButton.icon(
+                    onPressed: procesando ? null : onCancel,
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                    ),
+                    icon: procesando
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.redAccent),
+                          )
+                        : const Icon(Icons.close_rounded, size: 16),
+                    label: Text(procesando ? 'Cancelando...' : 'Cancelar'),
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _StatusBadge extends StatelessWidget {
-  final String estado;
+class _InfoRow extends StatelessWidget {
+  final IconData icon;
+  final String text;
 
-  const _StatusBadge({required this.estado});
+  const _InfoRow({required this.icon, required this.text});
 
   @override
   Widget build(BuildContext context) {
-    Color color;
-    switch (estado.toLowerCase()) {
-      case 'cancelada':
-        color = Colors.redAccent;
-        break;
-      case 'pendiente':
-        color = Colors.orange;
-        break;
-      case 'completada':
-        color = Colors.blueGrey;
-        break;
-      default:
-        color = Colors.green;
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        estado,
-        style: TextStyle(
-            fontSize: 11, fontWeight: FontWeight.bold, color: color),
-      ),
+    return Row(
+      children: [
+        Icon(icon, size: 15, color: AppTheme.textSecondary),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          ),
+        ),
+      ],
     );
   }
 }

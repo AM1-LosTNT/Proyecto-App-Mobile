@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/app_error.dart';
 import '../../models/place_model.dart';
 import '../../models/review_model.dart';
+import '../../models/user_profile.dart';
 import '../../providers/app_state.dart';
 import '../../services/supabase_service.dart';
+import '../../services/weather_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/app_feedback.dart';
 import '../route/route_screen.dart';
 
 class DetailsScreen extends StatefulWidget {
@@ -28,12 +33,137 @@ class _DetailsScreenState extends State<DetailsScreen> {
   List<Resena> _resenas = [];
   bool _isLoadingReviews = true;
   bool _savingReview = false;
+  AppUserProfile? _duenoPerfil;
 
   @override
   void initState() {
     super.initState();
     _destino = widget.destino;
     _loadResenas();
+    _loadDuenoPerfil();
+  }
+
+  Future<void> _loadDuenoPerfil() async {
+    final ownerId = _destino.idUsuario;
+    if (ownerId != null && ownerId.isNotEmpty) {
+      final perfil = await _supabaseService.getUserProfile(ownerId);
+      if (mounted && perfil != null) {
+        setState(() => _duenoPerfil = perfil);
+      }
+    }
+  }
+
+  Future<void> _abrirWhatsApp() async {
+    final rawPhone = _duenoPerfil?.telefono.isNotEmpty == true
+        ? _duenoPerfil!.telefono
+        : _destino.telefono;
+
+    if (rawPhone.trim().isEmpty) {
+      AppFeedback.info(context, 'El dueño del negocio aún no registró un número de teléfono.');
+      return;
+    }
+
+    var cleanPhone = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (!cleanPhone.startsWith('591') && cleanPhone.length == 8) {
+      cleanPhone = '591$cleanPhone';
+    }
+
+    final message = Uri.encodeComponent(
+      'Hola, vi tu local "${_destino.nombre}" en TurisApp y quisiera consultar información.',
+    );
+    final url = Uri.parse('https://wa.me/$cleanPhone?text=$message');
+
+    try {
+      final canLaunch = await canLaunchUrl(url);
+      if (canLaunch) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(url, mode: LaunchMode.platformDefault);
+      }
+    } catch (_) {
+      if (mounted) {
+        AppFeedback.error(context, 'No se pudo abrir WhatsApp. Verifica que la app esté instalada.');
+      }
+    }
+  }
+
+  Future<void> _abrirCorreo() async {
+    final rawEmail = _duenoPerfil?.email.isNotEmpty == true
+        ? _duenoPerfil!.email.trim()
+        : '';
+
+    if (rawEmail.isEmpty) {
+      AppFeedback.info(context, 'El negocio no tiene un correo de contacto registrado.');
+      return;
+    }
+
+    final subject = 'Consulta sobre ${_destino.nombre} - TurisApp';
+    final body =
+        'Hola,\n\nTe escribo desde TurisApp porque me interesa tu local "${_destino.nombre}".\n\nSaludos!';
+
+    // Intentar primero URI directo mailto
+    final mailtoUri = Uri(
+      scheme: 'mailto',
+      path: rawEmail,
+      queryParameters: {
+        'subject': subject,
+        'body': body,
+      },
+    );
+
+    try {
+      final launched = await launchUrl(
+        mailtoUri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (launched) return;
+    } catch (_) {}
+
+    // Fallback directo a Gmail Web (compose)
+    try {
+      final gmailWebUri = Uri.parse(
+        'https://mail.google.com/mail/?view=cm&fs=1&to=$rawEmail&su=${Uri.encodeComponent(subject)}&body=${Uri.encodeComponent(body)}',
+      );
+      final launchedWeb = await launchUrl(
+        gmailWebUri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (launchedWeb) return;
+    } catch (_) {}
+
+    if (mounted) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.email_outlined, color: Color(0xFFEA4335)),
+              SizedBox(width: 8),
+              Text('Correo de contacto', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('No se pudo abrir automáticamente tu gestor de correo. Puedes escribir directamente a:'),
+              const SizedBox(height: 10),
+              SelectableText(
+                rawEmail,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppTheme.primaryColor),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Entendido'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   @override
@@ -96,7 +226,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
   void _showAddReviewDialog() {
     final user = _supabaseService.currentUser;
     if (user == null) {
-      _showSnack('Inicia sesión para publicar una reseña.');
+      AppFeedback.info(context, 'Inicia sesión para publicar una reseña.');
       return;
     }
 
@@ -105,6 +235,8 @@ class _DetailsScreenState extends State<DetailsScreen> {
       _userRating = existing.calificacion;
       _commentController.text = existing.comentario;
     }
+
+    String? formError;
 
     showModalBottomSheet(
       context: context,
@@ -121,106 +253,149 @@ class _DetailsScreenState extends State<DetailsScreen> {
                 bottom: MediaQuery.of(context).viewInsets.bottom + 20,
                 left: 20,
                 right: 20,
-                top: 20,
+                top: 12,
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        existing == null ? 'Escribir una reseña' : 'Editar mi reseña',
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.pop(sheetContext),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          existing == null
+                              ? 'Escribir una reseña'
+                              : 'Editar mi reseña',
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(sheetContext),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    const Text('¿Qué te pareció este lugar?',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: AppTheme.textSecondary)),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(5, (index) {
+                        final starVal = index + 1;
+                        return IconButton(
+                          icon: Icon(
+                            starVal <= _userRating
+                                ? Icons.star_rounded
+                                : Icons.star_outline_rounded,
+                            color: Colors.amber,
+                            size: 36,
+                          ),
+                          onPressed: () {
+                            setSheetState(() => _userRating = starVal);
+                          },
+                        );
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _commentController,
+                      maxLines: 4,
+                      maxLength: 500,
+                      textCapitalization: TextCapitalization.sentences,
+                      onChanged: (_) {
+                        if (formError != null) {
+                          setSheetState(() => formError = null);
+                        }
+                      },
+                      decoration: const InputDecoration(
+                        hintText: 'Cuéntanos tu experiencia en este lugar...',
+                      ),
+                    ),
+                    if (formError != null) ...[
+                      const SizedBox(height: 4),
+                      InlineAlert(
+                        message: formError!,
+                        onDismiss: () => setSheetState(() => formError = null),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 8),
-                  const Text('¿Qué te pareció este lugar?',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: AppTheme.textSecondary)),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(5, (index) {
-                      final starVal = index + 1;
-                      return IconButton(
-                        icon: Icon(
-                          starVal <= _userRating
-                              ? Icons.star_rounded
-                              : Icons.star_outline_rounded,
-                          color: Colors.amber,
-                          size: 36,
-                        ),
-                        onPressed: () {
-                          setSheetState(() => _userRating = starVal);
-                        },
-                      );
-                    }),
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _commentController,
-                    maxLines: 4,
-                    maxLength: 500,
-                    decoration: const InputDecoration(
-                      hintText: 'Cuéntanos tu experiencia en este lugar...',
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: _savingReview
-                        ? null
-                        : () async {
-                            final comment = _commentController.text.trim();
-                            if (comment.isEmpty) {
-                              _showSnack('Escribe un comentario para continuar.');
-                              return;
-                            }
-                            setSheetState(() => _savingReview = true);
-                            try {
-                              await _supabaseService.saveResena(
-                                idDestino: _destino.id,
-                                calificacion: _userRating,
-                                comentario: comment,
-                              );
-                              if (!sheetContext.mounted) return;
-                              Navigator.pop(sheetContext);
-                              await _loadResenas();
-                              _showSnack(
-                                existing == null
-                                    ? '¡Gracias por tu opinión!'
-                                    : 'Tu reseña se actualizó correctamente.',
-                                success: true,
-                              );
-                            } catch (e) {
-                              _showSnack(
-                                e.toString().replaceFirst('Exception: ', ''),
-                              );
-                            } finally {
-                              if (sheetContext.mounted) {
-                                setSheetState(() => _savingReview = false);
+                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: _savingReview
+                          ? null
+                          : () async {
+                              final comment = _commentController.text.trim();
+                              if (comment.isEmpty) {
+                                setSheetState(() => formError =
+                                    'Escribe un comentario antes de publicar tu reseña.');
+                                return;
                               }
-                            }
-                          },
-                    child: _savingReview
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                                color: Colors.white, strokeWidth: 2.5),
-                          )
-                        : Text(existing == null
-                            ? 'Publicar reseña'
-                            : 'Guardar cambios'),
-                  ),
-                ],
+                              if (comment.length < 5) {
+                                setSheetState(() => formError =
+                                    'Tu comentario es muy corto. Cuéntanos un poco más.');
+                                return;
+                              }
+
+                              setSheetState(() {
+                                _savingReview = true;
+                                formError = null;
+                              });
+                              try {
+                                await _supabaseService.saveResena(
+                                  idDestino: _destino.id,
+                                  calificacion: _userRating,
+                                  comentario: comment,
+                                );
+                                if (!sheetContext.mounted) return;
+                                Navigator.pop(sheetContext);
+                                await _loadResenas();
+                                if (mounted) {
+                                  AppFeedback.success(
+                                    this.context,
+                                    existing == null
+                                        ? '¡Gracias por tu opinión!'
+                                        : 'Tu reseña se actualizó correctamente.',
+                                  );
+                                }
+                              } catch (e) {
+                                if (!sheetContext.mounted) return;
+                                setSheetState(() => formError = friendlyError(
+                                      e,
+                                      fallback:
+                                          'No se pudo publicar tu reseña. Inténtalo de nuevo.',
+                                    ));
+                              } finally {
+                                if (sheetContext.mounted) {
+                                  setSheetState(() => _savingReview = false);
+                                }
+                              }
+                            },
+                      child: _savingReview
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2.5),
+                            )
+                          : Text(existing == null
+                              ? 'Publicar reseña'
+                              : 'Guardar cambios'),
+                    ),
+                  ],
+                ),
               ),
             );
           },
@@ -229,111 +404,396 @@ class _DetailsScreenState extends State<DetailsScreen> {
     );
   }
 
-  void _showBookingDialog() {
+  Future<void> _showBookingDialog() async {
     final user = _supabaseService.currentUser;
     if (user == null) {
-      _showSnack('Inicia sesión para realizar una reserva.');
+      AppFeedback.info(context, 'Inicia sesión para realizar una reserva.');
       return;
     }
 
-    int personas = 1;
-    final precio = _destino.precio > 0 ? _destino.precio : 50.0;
+    final precio = _destino.precio > 0 ? _destino.precio : 0.0;
 
-    showDialog(
+    DateTime? fechaSeleccionada;
+    TimeOfDay? horaSeleccionada;
+    var personas = 1;
+    var guardando = false;
+    String? formError;
+
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (dialogContext) {
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
         return StatefulBuilder(
-          builder: (context, setDialogState) {
+          builder: (context, setSheetState) {
             final total = precio * personas;
-            return AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              title: const Row(
-                children: [
-                  Icon(Icons.calendar_month_rounded, color: AppTheme.primaryColor),
-                  SizedBox(width: 8),
-                  Text('Confirmar reserva'),
-                ],
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _destino.nombre,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 16),
-                  ),
-                  const SizedBox(height: 8),
-                  Text('Precio por persona: Bs. ${precio.toStringAsFixed(2)}'),
-                  const SizedBox(height: 14),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Personas:'),
-                      Row(
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.remove_circle_outline),
-                            onPressed: personas > 1
-                                ? () => setDialogState(() => personas--)
-                                : null,
+
+            Future<void> elegirFecha() async {
+              final now = DateTime.now();
+              final picked = await showDatePicker(
+                context: sheetContext,
+                initialDate: fechaSeleccionada ?? now,
+                firstDate: DateTime(now.year, now.month, now.day),
+                lastDate: DateTime(now.year + 1, now.month, now.day),
+                helpText: 'Fecha de la reserva',
+                cancelText: 'Cancelar',
+                confirmText: 'Aceptar',
+              );
+              if (picked != null && sheetContext.mounted) {
+                setSheetState(() {
+                  fechaSeleccionada = picked;
+                  formError = null;
+                });
+              }
+            }
+
+            Future<void> elegirHora() async {
+              final picked = await showTimePicker(
+                context: sheetContext,
+                initialTime: horaSeleccionada ?? TimeOfDay.now(),
+                helpText: 'Hora de la reserva',
+                cancelText: 'Cancelar',
+                confirmText: 'Aceptar',
+                builder: (ctx, child) => MediaQuery(
+                  data: MediaQuery.of(ctx)
+                      .copyWith(alwaysUse24HourFormat: true),
+                  child: child!,
+                ),
+              );
+              if (picked != null && sheetContext.mounted) {
+                setSheetState(() {
+                  horaSeleccionada = picked;
+                  formError = null;
+                });
+              }
+            }
+
+            Future<void> enviarSolicitud() async {
+              final fecha = fechaSeleccionada;
+              final hora = horaSeleccionada;
+
+              if (fecha == null) {
+                setSheetState(() => formError =
+                    'Selecciona la fecha en la que quieres visitar el lugar.');
+                return;
+              }
+              if (hora == null) {
+                setSheetState(() => formError =
+                    'Selecciona la hora de tu reserva para continuar.');
+                return;
+              }
+
+              final fechaHora = DateTime(
+                fecha.year,
+                fecha.month,
+                fecha.day,
+                hora.hour,
+                hora.minute,
+              );
+
+              if (!fechaHora.isAfter(DateTime.now())) {
+                setSheetState(() => formError =
+                    'La fecha y la hora ya pasaron. Elige un momento posterior.');
+                return;
+              }
+
+              // Consultar clima para alertar al usuario antes de confirmar la reserva
+              final forecastClima = WeatherService.getForecastForDate(fechaHora);
+              if (forecastClima != null && sheetContext.mounted) {
+                final confirmacionClima = await showDialog<bool>(
+                  context: sheetContext,
+                  builder: (ctx) => AlertDialog(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    title: const Row(
+                      children: [
+                        Icon(Icons.wb_sunny_rounded, color: Colors.orangeAccent),
+                        SizedBox(width: 8),
+                        Text('Pronóstico del clima', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    content: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: Colors.blue.shade200),
                           ),
-                          Text('$personas',
-                              style: const TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.bold)),
-                          IconButton(
-                            icon: const Icon(Icons.add_circle_outline),
-                            onPressed: () => setDialogState(() => personas++),
+                          child: Row(
+                            children: [
+                              Icon(forecastClima.weatherIcon, size: 36, color: Colors.blue.shade700),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      forecastClima.weatherDescription,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue.shade900,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      '${forecastClima.tempMin.toStringAsFixed(0)}°C a ${forecastClima.tempMax.toStringAsFixed(0)}°C · ${forecastClima.precipitationProbability}% lluvia',
+                                      style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                                    ),
+                                    Text(
+                                      'Viento: ${forecastClima.windSpeedMax.toStringAsFixed(0)} km/h',
+                                      style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          '¿Estás seguro de que deseas confirmar tu solicitud de reserva para esta fecha y hora?',
+                          style: TextStyle(fontSize: 13, height: 1.35),
+                        ),
+                      ],
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('Revisar fecha'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('Sí, confirmar'),
                       ),
                     ],
                   ),
-                  const Divider(),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Total a pagar:',
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text(
-                        'Bs. ${total.toStringAsFixed(2)}',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.primaryColor,
+                );
+
+                if (confirmacionClima != true) return;
+              }
+
+              setSheetState(() {
+                guardando = true;
+                formError = null;
+              });
+
+              try {
+                await _supabaseService.crearReserva(
+                  idDestino: _destino.id,
+                  fechaHora: fechaHora,
+                  cantidadPersonas: personas,
+                  precioUnitario: precio,
+                  total: total,
+                );
+                if (!sheetContext.mounted) return;
+                Navigator.pop(sheetContext);
+                if (mounted) {
+                  AppFeedback.success(
+                    this.context,
+                    'Solicitud enviada. El negocio debe confirmarla; puedes seguir el estado en "Mis reservas".',
+                  );
+                }
+              } catch (e) {
+                if (!sheetContext.mounted) return;
+                setSheetState(() => formError = friendlyError(
+                      e,
+                      fallback:
+                          'No se pudo enviar la solicitud de reserva. Inténtalo de nuevo.',
+                    ));
+              } finally {
+                if (sheetContext.mounted) {
+                  setSheetState(() => guardando = false);
+                }
+              }
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+                left: 20,
+                right: 20,
+                top: 12,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(2),
                         ),
                       ),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.event_available_rounded,
+                                color: AppTheme.primaryColor),
+                            SizedBox(width: 8),
+                            Text(
+                              'Solicitar reserva',
+                              style: TextStyle(
+                                  fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(sheetContext),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _destino.nombre,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 15),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      precio > 0
+                          ? 'Precio por persona: Bs. ${precio.toStringAsFixed(2)}'
+                          : 'Este lugar no cobra entrada.',
+                      style: const TextStyle(
+                          fontSize: 13, color: AppTheme.textSecondary),
+                    ),
+                    const SizedBox(height: 18),
+                    const Text(
+                      '¿Cuándo quieres ir?',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _PickerTile(
+                            icon: Icons.calendar_month_rounded,
+                            label: 'Fecha',
+                            value: fechaSeleccionada == null
+                                ? 'Elegir fecha'
+                                : _formatDate(fechaSeleccionada!),
+                            selected: fechaSeleccionada != null,
+                            onTap: elegirFecha,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _PickerTile(
+                            icon: Icons.access_time_rounded,
+                            label: 'Hora',
+                            value: horaSeleccionada == null
+                                ? 'Elegir hora'
+                                : _formatTime(horaSeleccionada!),
+                            selected: horaSeleccionada != null,
+                            onTap: elegirHora,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Personas',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 14),
+                        ),
+                        Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.remove_circle_outline),
+                              onPressed: personas > 1
+                                  ? () => setSheetState(() {
+                                        personas--;
+                                        formError = null;
+                                      })
+                                  : null,
+                            ),
+                            Text(
+                              '$personas',
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.bold),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.add_circle_outline),
+                              onPressed: personas < 50
+                                  ? () => setSheetState(() {
+                                        personas++;
+                                        formError = null;
+                                      })
+                                  : null,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const Divider(),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Total estimado:',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        Text(
+                          total > 0
+                              ? 'Bs. ${total.toStringAsFixed(2)}'
+                              : 'Sin costo',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.primaryColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (formError != null) ...[
+                      const SizedBox(height: 14),
+                      InlineAlert(
+                        message: formError!,
+                        onDismiss: () => setSheetState(() => formError = null),
+                      ),
                     ],
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: guardando ? null : enviarSolicitud,
+                      child: guardando
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2.5),
+                            )
+                          : const Text('Enviar solicitud'),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Tu reserva quedará "En espera" hasta que el negocio la acepte o la rechace.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 11, color: AppTheme.textSecondary),
+                    ),
+                    const SizedBox(height: 4),
+                  ],
+                ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Cancelar'),
-                ),
-                ElevatedButton(
-                  onPressed: () async {
-                    Navigator.pop(dialogContext);
-                    try {
-                      final fechaHoy =
-                          DateTime.now().toIso8601String().split('T').first;
-                      await _supabaseService.crearReserva(
-                        idDestino: _destino.id,
-                        fechaReserva: fechaHoy,
-                        cantidadPersonas: personas,
-                        precioUnitario: precio,
-                        total: total,
-                      );
-                      _showSnack('¡Reserva confirmada! Te esperamos.',
-                          success: true);
-                    } catch (e) {
-                      _showSnack('No se pudo reservar: $e');
-                    }
-                  },
-                  child: const Text('Confirmar reserva'),
-                ),
-              ],
             );
           },
         );
@@ -341,14 +801,10 @@ class _DetailsScreenState extends State<DetailsScreen> {
     );
   }
 
-  void _showSnack(String message, {bool success = false}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: success ? Colors.green : Colors.redAccent,
-      ),
-    );
+  String _formatTime(TimeOfDay time) {
+    final hour = time.hour.toString().padLeft(2, '0');
+    final minute = time.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
   }
 
   String _formatDate(DateTime date) {
@@ -392,7 +848,13 @@ class _DetailsScreenState extends State<DetailsScreen> {
                         try {
                           await appState.toggleFavorite(_destino);
                         } catch (e) {
-                          _showSnack(e.toString());
+                          if (!context.mounted) return;
+                          AppFeedback.errorFrom(
+                            context,
+                            e,
+                            fallback:
+                                'No se pudo actualizar tus lugares guardados.',
+                          );
                         }
                       },
                     ),
@@ -579,6 +1041,103 @@ class _DetailsScreenState extends State<DetailsScreen> {
                         ],
                       ),
                       const SizedBox(height: 18),
+
+                      // Tarjeta de Contacto Directo con el Dueño del Negocio (WhatsApp / Gmail)
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.grey.shade200),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.03),
+                              blurRadius: 10,
+                              offset: const Offset(0, 3),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.chat_bubble_outline_rounded,
+                                    color: AppTheme.primaryColor, size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  _duenoPerfil?.nombreNegocio.isNotEmpty == true
+                                      ? 'Contacto con ${_duenoPerfil!.nombreNegocio}'
+                                      : 'Mensaje directo con el anfitrión',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    color: AppTheme.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _duenoPerfil != null
+                                  ? 'Atendido por ${_duenoPerfil!.nombre}. Consulta dudas sobre servicios, horarios o promociones.'
+                                  : 'Comunícate directamente por WhatsApp o Correo para resolver tus dudas.',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppTheme.textSecondary,
+                                height: 1.3,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                // Botón WhatsApp
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    onPressed: _abrirWhatsApp,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF25D366),
+                                      foregroundColor: Colors.white,
+                                      elevation: 0,
+                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.chat_rounded, size: 18),
+                                    label: const Text(
+                                      'WhatsApp',
+                                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                // Botón Correo / Gmail
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: _abrirCorreo,
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFFEA4335),
+                                      side: const BorderSide(color: Color(0xFFEA4335)),
+                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.email_outlined, size: 18),
+                                    label: const Text(
+                                      'Correo',
+                                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 14),
                       InkWell(
                         onTap: () {
                           Navigator.push(
@@ -844,11 +1403,26 @@ class _DetailsScreenState extends State<DetailsScreen> {
                                                 ),
                                               );
                                               if (confirm == true) {
-                                                await _supabaseService
-                                                    .deleteResena(rev.id);
-                                                _commentController.clear();
-                                                _userRating = 5;
-                                                await _loadResenas();
+                                                try {
+                                                  await _supabaseService
+                                                      .deleteResena(rev.id);
+                                                  _commentController.clear();
+                                                  _userRating = 5;
+                                                  await _loadResenas();
+                                                  if (!context.mounted) return;
+                                                  AppFeedback.success(
+                                                    context,
+                                                    'Tu reseña se eliminó correctamente.',
+                                                  );
+                                                } catch (e) {
+                                                  if (!context.mounted) return;
+                                                  AppFeedback.errorFrom(
+                                                    context,
+                                                    e,
+                                                    fallback:
+                                                        'No se pudo eliminar tu reseña. Inténtalo de nuevo.',
+                                                  );
+                                                }
                                               }
                                             }
                                           },
@@ -922,7 +1496,7 @@ class _DetailsScreenState extends State<DetailsScreen> {
                         height: 50,
                         child: ElevatedButton(
                           onPressed: _showBookingDialog,
-                          child: const Text('Reservar ahora'),
+                          child: const Text('Solicitar reserva'),
                         ),
                       ),
                     ),
@@ -959,6 +1533,76 @@ class _RoundAction extends StatelessWidget {
       child: IconButton(
         icon: Icon(icon, color: color),
         onPressed: onTap,
+      ),
+    );
+  }
+}
+
+class _PickerTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _PickerTile({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color =
+        selected ? AppTheme.primaryColor : AppTheme.textSecondary;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected
+              ? AppTheme.primaryColor.withValues(alpha: 0.07)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected
+                ? AppTheme.primaryColor.withValues(alpha: 0.5)
+                : Colors.grey.shade300,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: selected ? AppTheme.textPrimary : color,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

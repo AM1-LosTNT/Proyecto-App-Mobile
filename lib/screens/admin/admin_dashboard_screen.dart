@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/place_model.dart';
+import '../../models/reserva.dart';
 import '../../models/user_profile.dart';
 import '../../providers/app_state.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/reservation_status_chip.dart';
 import '../business/place_form_screen.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
@@ -21,7 +23,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   List<AppUserProfile> _users = [];
   List<DestinoLugar> _places = [];
   List<CategoriaItem> _categorias = [];
-  List<Map<String, dynamic>> _reservas = [];
+  List<Reserva> _reservas = [];
   bool _loading = true;
 
   @override
@@ -44,7 +46,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         _users = results[0] as List<AppUserProfile>;
         _places = results[1] as List<DestinoLugar>;
         _categorias = results[2] as List<CategoriaItem>;
-        _reservas = results[3] as List<Map<String, dynamic>>;
+        _reservas = results[3] as List<Reserva>;
         _loading = false;
       });
     } catch (e) {
@@ -307,7 +309,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     }
   }
 
-  Future<void> _changeReservaEstado(String id, String estado) async {
+  Future<void> _changeReservaEstado(String id, ReservationStatus estado) async {
     try {
       await _service.updateReservaEstado(id, estado);
       await _loadAll();
@@ -801,8 +803,8 @@ class _CategoriesTab extends StatelessWidget {
 }
 
 class _ReservationsTab extends StatelessWidget {
-  final List<Map<String, dynamic>> reservas;
-  final void Function(String, String) onStatusChanged;
+  final List<Reserva> reservas;
+  final void Function(String, ReservationStatus) onStatusChanged;
   final void Function(String) onDelete;
 
   const _ReservationsTab({
@@ -810,13 +812,6 @@ class _ReservationsTab extends StatelessWidget {
     required this.onStatusChanged,
     required this.onDelete,
   });
-
-  static const _estados = [
-    'Pendiente',
-    'Confirmada',
-    'Completada',
-    'Cancelada',
-  ];
 
   @override
   Widget build(BuildContext context) {
@@ -834,11 +829,8 @@ class _ReservationsTab extends StatelessWidget {
       itemCount: reservas.length,
       itemBuilder: (context, index) {
         final reserva = reservas[index];
-        final destino = reserva['destinos_lugares'] as Map?;
-        final usuario = reserva['usuarios'] as Map?;
-        final id = reserva['id']?.toString() ?? '';
-        final estado = reserva['estado']?.toString() ?? 'Confirmada';
-        final total = (reserva['total'] as num?)?.toDouble() ?? 0;
+        final id = reserva.id;
+        final estado = reserva.estado;
 
         return Card(
           margin: const EdgeInsets.only(bottom: 10),
@@ -852,24 +844,18 @@ class _ReservationsTab extends StatelessWidget {
                   children: [
                     Expanded(
                       child: Text(
-                        destino?['nombre']?.toString() ?? 'Reserva',
+                        reserva.destinoNombre.isNotEmpty ? reserva.destinoNombre : 'Reserva',
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
-                    PopupMenuButton<String>(
+                    PopupMenuButton<ReservationStatus>(
                       initialValue: estado,
                       onSelected: (value) => onStatusChanged(id, value),
-                      itemBuilder: (_) => _estados
+                      itemBuilder: (_) => ReservationStatus.values
                           .map((e) =>
-                              PopupMenuItem(value: e, child: Text(e)))
+                              PopupMenuItem(value: e, child: Text(e.label)))
                           .toList(),
-                      child: Text(
-                        estado,
-                        style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.primaryColor),
-                      ),
+                      child: ReservationStatusChip(status: estado),
                     ),
                     IconButton(
                       onPressed: () => onDelete(id),
@@ -879,16 +865,24 @@ class _ReservationsTab extends StatelessWidget {
                   ],
                 ),
                 Text(
-                  'Cliente: ${usuario?['nombre'] ?? 'Turista'} · ${usuario?['email'] ?? ''}',
+                  'Cliente: ${reserva.clienteNombre} · ${reserva.clienteEmail}',
                   style: const TextStyle(
                       fontSize: 11, color: AppTheme.textSecondary),
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${reserva['cantidad_personas'] ?? 1} personas · ${reserva['fecha_reserva'] ?? ''} · Bs. ${total.toStringAsFixed(2)}',
+                  '${reserva.personasTexto} · ${reserva.fechaHoraTexto} · ${reserva.totalTexto}',
                   style: const TextStyle(
                       fontSize: 11, color: AppTheme.textSecondary),
                 ),
+                if (estado == ReservationStatus.rechazada && reserva.motivoRechazo.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      'Motivo rechazo: ${reserva.motivoRechazo}',
+                      style: const TextStyle(fontSize: 11, color: Colors.redAccent),
+                    ),
+                  ),
               ],
             ),
           ),

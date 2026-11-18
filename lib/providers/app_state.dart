@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/place_model.dart';
+import '../models/reserva.dart';
 import '../models/user_profile.dart';
 import '../services/supabase_service.dart';
 
@@ -21,8 +22,8 @@ class AppState extends ChangeNotifier {
   List<CategoriaItem> _categorias = [];
   List<DestinoLugar> _destinos = [];
   Set<String> _favoritos = {};
-  List<Map<String, dynamic>> _misReservas = [];
-  List<Map<String, dynamic>> _reservasNegocio = [];
+  List<Reserva> _misReservas = [];
+  List<Reserva> _reservasNegocio = [];
 
   User? get user => _user;
   AppUserProfile? get profile => _profile;
@@ -34,9 +35,8 @@ class AppState extends ChangeNotifier {
   List<CategoriaItem> get categorias => List.unmodifiable(_categorias);
   List<DestinoLugar> get destinos => List.unmodifiable(_destinos);
   Set<String> get favoritos => Set.unmodifiable(_favoritos);
-  List<Map<String, dynamic>> get misReservas => List.unmodifiable(_misReservas);
-  List<Map<String, dynamic>> get reservasNegocio =>
-      List.unmodifiable(_reservasNegocio);
+  List<Reserva> get misReservas => List.unmodifiable(_misReservas);
+  List<Reserva> get reservasNegocio => List.unmodifiable(_reservasNegocio);
 
   bool get isAdmin => _profile?.isAdmin ?? false;
   bool get isBusiness => _profile?.isBusiness ?? false;
@@ -181,14 +181,23 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> refreshReservas() async {
-    if (_user == null) return;
-    final results = await Future.wait<dynamic>([
-      service.getMisReservas(),
-      isBusiness ? service.getReservasNegocio(_user!.id) : Future.value(<Map<String, dynamic>>[]),
-    ]);
-    _misReservas = results[0] as List<Map<String, dynamic>>;
-    _reservasNegocio = results[1] as List<Map<String, dynamic>>;
-    notifyListeners();
+    final current = _user;
+    if (current == null) return;
+    try {
+      final results = await Future.wait<dynamic>([
+        service.getMisReservas(),
+        isBusiness
+            ? service.getReservasNegocio(current.id)
+            : Future.value(<Reserva>[]),
+      ]);
+      _misReservas = results[0] as List<Reserva>;
+      _reservasNegocio = results[1] as List<Reserva>;
+    } catch (e) {
+      // No interrumpimos la pantalla: cada lista muestra su propio error.
+      debugPrint('No se pudieron refrescar las reservas: $e');
+    } finally {
+      notifyListeners();
+    }
   }
 
   DestinoLugar? placeById(String id) {
@@ -220,23 +229,27 @@ class AppState extends ChangeNotifier {
       items = items.where((d) => d.tipo.toLowerCase() == tipo.toLowerCase());
     }
 
-    if (categorySlug.isNotEmpty && categorySlug != 'all') {
+    if (categorySlug.isNotEmpty && categorySlug != 'all' && categorySlug != 'todo') {
       CategoriaItem? categoria;
       for (final c in _categorias) {
-        if (c.slug == categorySlug) {
+        if (c.slug.toLowerCase() == categorySlug.toLowerCase()) {
           categoria = c;
           break;
         }
       }
       final slug = categorySlug.toLowerCase();
+      final catNombre = categoria?.nombre.toLowerCase() ?? '';
+
       items = items.where((d) {
         final matchesId = categoria != null && d.idCategoria == categoria.id;
-        final matchesNombre =
-            (d.categoriaNombre ?? '').toLowerCase().contains(slug);
-        final matchesTipo = d.tipo.toLowerCase() == slug;
-        final slugContieneNombre =
-            categoria != null && slug.contains(categoria.slug);
-        return matchesId || matchesNombre || matchesTipo || slugContieneNombre;
+        final dCat = (d.categoriaNombre ?? '').toLowerCase();
+        final dTipo = d.tipo.toLowerCase();
+
+        final matchesNombre = dCat.isNotEmpty && (dCat.contains(slug) || slug.contains(dCat) || (catNombre.isNotEmpty && dCat.contains(catNombre)));
+        final matchesTipo = dTipo.contains(slug) || slug.contains(dTipo);
+        final matchesAttraction = (slug == 'lugares' || slug == 'parques' || slug == 'montana' || slug == 'playas' || slug == 'cultura') && dTipo == 'attraction';
+
+        return matchesId || matchesNombre || matchesTipo || (matchesAttraction && (matchesId || matchesNombre));
       });
     }
 

@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/app_error.dart';
 import '../../models/place_model.dart';
+import '../../models/reserva.dart';
 import '../../providers/app_state.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/app_feedback.dart';
+import '../../widgets/reservation_status_chip.dart';
 import '../details/details_screen.dart';
 import 'place_form_screen.dart';
 
@@ -17,8 +21,9 @@ class BusinessDashboardScreen extends StatefulWidget {
 
 class _BusinessDashboardScreenState extends State<BusinessDashboardScreen> {
   final _service = SupabaseService();
-  List<Map<String, dynamic>> _reservas = [];
+  List<Reserva> _reservas = [];
   bool _loadingReservas = true;
+  String? _reservasError;
 
   @override
   void initState() {
@@ -29,13 +34,30 @@ class _BusinessDashboardScreenState extends State<BusinessDashboardScreen> {
   Future<void> _loadReservas() async {
     final appState = context.read<AppState>();
     if (appState.user == null) return;
-    setState(() => _loadingReservas = true);
-    final data = await _service.getReservasNegocio(appState.user!.id);
-    if (!mounted) return;
+
     setState(() {
-      _reservas = data;
-      _loadingReservas = false;
+      _loadingReservas = true;
+      _reservasError = null;
     });
+
+    try {
+      final data = await _service.getReservasNegocio(appState.user!.id);
+      if (!mounted) return;
+      setState(() {
+        _reservas = data;
+        _loadingReservas = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _reservasError = friendlyError(
+          e,
+          fallback:
+              'No pudimos cargar las reservas de tu negocio. Revisa tu conexión e inténtalo de nuevo.',
+        );
+        _loadingReservas = false;
+      });
+    }
   }
 
   Future<void> _deletePlace(DestinoLugar place) async {
@@ -63,9 +85,14 @@ class _BusinessDashboardScreenState extends State<BusinessDashboardScreen> {
       await _service.deletePlace(place.id);
       if (!mounted) return;
       context.read<AppState>().removePlaceById(place.id);
-      _snack('Lugar eliminado.', success: true);
+      AppFeedback.success(context, 'Lugar eliminado.');
     } catch (e) {
-      _snack('No se pudo eliminar: $e');
+      if (!mounted) return;
+      AppFeedback.errorFrom(
+        context,
+        e,
+        fallback: 'No se pudo eliminar el lugar. Inténtalo de nuevo.',
+      );
     }
   }
 
@@ -75,18 +102,174 @@ class _BusinessDashboardScreenState extends State<BusinessDashboardScreen> {
       if (!mounted) return;
       context.read<AppState>().upsertPlace(place.copyWith(activo: active));
     } catch (e) {
-      _snack('No se pudo actualizar: $e');
+      if (!mounted) return;
+      AppFeedback.errorFrom(
+        context,
+        e,
+        fallback: 'No se pudo actualizar la visibilidad del lugar.',
+      );
     }
   }
 
-  void _snack(String message, {bool success = false}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: success ? AppTheme.primaryColor : Colors.redAccent,
+  Future<void> _aceptarReserva(Reserva reserva) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Aceptar reserva'),
+        content: Text(
+          '¿Aceptar la reserva de ${reserva.clienteNombre} para el '
+          '${reserva.fechaHoraTexto}? El turista verá que fue aceptada.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Aceptar'),
+          ),
+        ],
       ),
     );
+
+    if (confirm != true || !mounted) return;
+
+    try {
+      await _service.updateReservaEstado(
+        reserva.id,
+        ReservationStatus.aceptada,
+      );
+      await _loadReservas();
+      if (!mounted) return;
+      AppFeedback.success(context, 'Reserva aceptada. El turista ya puede verlo.');
+    } catch (e) {
+      if (!mounted) return;
+      AppFeedback.errorFrom(
+        context,
+        e,
+        fallback: 'No se pudo aceptar la reserva. Inténtalo de nuevo.',
+      );
+    }
+  }
+
+  Future<void> _rechazarReserva(Reserva reserva) async {
+    final motivoController = TextEditingController();
+
+    final resultado = await showDialog<({String motivo})>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Rechazar reserva'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Reserva de ${reserva.clienteNombre} para el '
+              '${reserva.fechaHoraTexto}.',
+              style: const TextStyle(
+                  fontSize: 13, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: motivoController,
+              maxLines: 3,
+              maxLength: 200,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(
+                labelText: 'Motivo (opcional)',
+                hintText: 'Ej. No hay disponibilidad para esa fecha',
+                alignLabelWithHint: true,
+              ),
+            ),
+            const Text(
+              'El turista podrá leer el motivo en "Mis reservas".',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(
+              ctx,
+              (motivo: motivoController.text.trim()),
+            ),
+            child: const Text('Rechazar'),
+          ),
+        ],
+      ),
+    );
+
+    motivoController.dispose();
+
+    if (resultado == null || !mounted) return;
+
+    try {
+      await _service.updateReservaEstado(
+        reserva.id,
+        ReservationStatus.rechazada,
+        motivoRechazo: resultado.motivo,
+      );
+      await _loadReservas();
+      if (!mounted) return;
+      AppFeedback.success(context, 'Reserva rechazada. El turista verá el motivo.');
+    } catch (e) {
+      if (!mounted) return;
+      AppFeedback.errorFrom(
+        context,
+        e,
+        fallback: 'No se pudo rechazar la reserva. Inténtalo de nuevo.',
+      );
+    }
+  }
+
+  Future<void> _completarReserva(Reserva reserva) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Marcar como completada'),
+        content: Text(
+          '¿Confirmas que la reserva de ${reserva.clienteNombre} ya se realizó?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sí, completada'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    try {
+      await _service.updateReservaEstado(
+        reserva.id,
+        ReservationStatus.completada,
+      );
+      await _loadReservas();
+      if (!mounted) return;
+      AppFeedback.success(context, 'Reserva marcada como completada.');
+    } catch (e) {
+      if (!mounted) return;
+      AppFeedback.errorFrom(
+        context,
+        e,
+        fallback: 'No se pudo actualizar la reserva. Inténtalo de nuevo.',
+      );
+    }
   }
 
   @override
@@ -209,17 +392,12 @@ class _BusinessDashboardScreenState extends State<BusinessDashboardScreen> {
                     ),
                     _ReservasTab(
                       loading: _loadingReservas,
+                      error: _reservasError,
                       reservas: _reservas,
                       onRefresh: _loadReservas,
-                      onStatusChanged: (id, estado) async {
-                        try {
-                          await _service.updateReservaEstado(id, estado);
-                          await _loadReservas();
-                          _snack('Estado actualizado.', success: true);
-                        } catch (e) {
-                          _snack('No se pudo actualizar: $e');
-                        }
-                      },
+                      onAccept: _aceptarReserva,
+                      onReject: _rechazarReserva,
+                      onComplete: _completarReserva,
                     ),
                   ],
                 ),
@@ -528,29 +706,61 @@ class _PlaceTile extends StatelessWidget {
 
 class _ReservasTab extends StatelessWidget {
   final bool loading;
-  final List<Map<String, dynamic>> reservas;
+  final String? error;
+  final List<Reserva> reservas;
   final Future<void> Function() onRefresh;
-  final void Function(String id, String estado) onStatusChanged;
+  final void Function(Reserva) onAccept;
+  final void Function(Reserva) onReject;
+  final void Function(Reserva) onComplete;
 
   const _ReservasTab({
     required this.loading,
+    required this.error,
     required this.reservas,
     required this.onRefresh,
-    required this.onStatusChanged,
+    required this.onAccept,
+    required this.onReject,
+    required this.onComplete,
   });
-
-  static const List<String> _estados = [
-    'Pendiente',
-    'Confirmada',
-    'Completada',
-    'Cancelada',
-  ];
 
   @override
   Widget build(BuildContext context) {
     if (loading) {
       return const Center(
           child: CircularProgressIndicator(color: AppTheme.primaryColor));
+    }
+
+    if (error != null) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(28),
+        children: [
+          SizedBox(height: MediaQuery.sizeOf(context).height * 0.12),
+          const Icon(Icons.cloud_off_rounded,
+              size: 64, color: AppTheme.textSecondary),
+          const SizedBox(height: 14),
+          const Text(
+            'No pudimos cargar las reservas',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            error!,
+            textAlign: TextAlign.center,
+            style:
+                const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 18),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: onRefresh,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
+            ),
+          ),
+        ],
+      );
     }
 
     return RefreshIndicator(
@@ -567,7 +777,15 @@ class _ReservasTab extends StatelessWidget {
                 const Text(
                   'Todavía no hay reservas',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  style:
+                      TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Cuando un turista solicite una reserva aparecerá aquí.',
+                  textAlign: TextAlign.center,
+                  style:
+                      TextStyle(fontSize: 13, color: AppTheme.textSecondary),
                 ),
               ],
             )
@@ -577,76 +795,11 @@ class _ReservasTab extends StatelessWidget {
               itemCount: reservas.length,
               itemBuilder: (context, index) {
                 final reserva = reservas[index];
-                final destino = reserva['destinos_lugares'] as Map?;
-                final usuario = reserva['usuarios'] as Map?;
-                final id = reserva['id']?.toString() ?? '';
-                final estado =
-                    reserva['estado']?.toString() ?? 'Confirmada';
-                final total =
-                    (reserva['total'] as num?)?.toDouble() ?? 0.0;
-
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16)),
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                destino?['nombre']?.toString() ??
-                                    'Lugar reservado',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 15),
-                              ),
-                            ),
-                            PopupMenuButton<String>(
-                              initialValue: estado,
-                              onSelected: (value) =>
-                                  onStatusChanged(id, value),
-                              itemBuilder: (_) => _estados
-                                  .map((e) => PopupMenuItem(
-                                        value: e,
-                                        child: Text(e),
-                                      ))
-                                  .toList(),
-                              child: _StatusBadge(estado: estado),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Cliente: ${usuario?['nombre'] ?? 'Turista'}'
-                          '${usuario?['telefono'] != null ? ' · ${usuario!['telefono']}' : ''}',
-                          style: const TextStyle(
-                              fontSize: 12, color: AppTheme.textSecondary),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${reserva['cantidad_personas'] ?? 1} personas · '
-                          'Fecha: ${reserva['fecha_reserva'] ?? ''}',
-                          style: const TextStyle(
-                              fontSize: 12, color: AppTheme.textSecondary),
-                        ),
-                        const SizedBox(height: 8),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: Text(
-                            'Bs. ${total.toStringAsFixed(2)}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: AppTheme.primaryColor,
-                              fontSize: 15,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                return _BusinessReservaCard(
+                  reserva: reserva,
+                  onAccept: () => onAccept(reserva),
+                  onReject: () => onReject(reserva),
+                  onComplete: () => onComplete(reserva),
                 );
               },
             ),
@@ -654,45 +807,184 @@ class _ReservasTab extends StatelessWidget {
   }
 }
 
-class _StatusBadge extends StatelessWidget {
-  final String estado;
+class _BusinessReservaCard extends StatelessWidget {
+  final Reserva reserva;
+  final VoidCallback onAccept;
+  final VoidCallback onReject;
+  final VoidCallback onComplete;
 
-  const _StatusBadge({required this.estado});
+  const _BusinessReservaCard({
+    required this.reserva,
+    required this.onAccept,
+    required this.onReject,
+    required this.onComplete,
+  });
 
   @override
   Widget build(BuildContext context) {
-    Color color;
-    switch (estado.toLowerCase()) {
-      case 'cancelada':
-        color = Colors.redAccent;
-        break;
-      case 'pendiente':
-        color = Colors.orange;
-        break;
-      case 'completada':
-        color = Colors.blueGrey;
-        break;
-      default:
-        color = Colors.green;
-    }
+    final estado = reserva.estado;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            estado,
-            style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.bold, color: color),
-          ),
-          const SizedBox(width: 2),
-          Icon(Icons.arrow_drop_down_rounded, size: 16, color: color),
-        ],
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Encabezado: imagen + nombre del lugar + estado
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: reserva.destinoImagen.isEmpty
+                      ? Container(
+                          width: 56,
+                          height: 56,
+                          color: AppTheme.primaryColor.withValues(alpha: 0.12),
+                          child: const Icon(Icons.landscape_rounded,
+                              color: AppTheme.primaryColor),
+                        )
+                      : Image.network(
+                          reserva.destinoImagen,
+                          width: 56,
+                          height: 56,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 56,
+                            height: 56,
+                            color:
+                                AppTheme.primaryColor.withValues(alpha: 0.12),
+                            child: const Icon(Icons.landscape_rounded,
+                                color: AppTheme.primaryColor),
+                          ),
+                        ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        reserva.destinoNombre,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      const SizedBox(height: 6),
+                      ReservationStatusChip(status: estado),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Datos del cliente
+            Row(
+              children: [
+                const Icon(Icons.person_outline, size: 15, color: AppTheme.textSecondary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    reserva.clienteNombre +
+                        (reserva.clienteTelefono.isNotEmpty
+                            ? ' · ${reserva.clienteTelefono}'
+                            : '') +
+                        (reserva.clienteEmail.isNotEmpty
+                            ? ' · ${reserva.clienteEmail}'
+                            : ''),
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+
+            // Fecha y hora
+            Row(
+              children: [
+                const Icon(Icons.event_rounded, size: 15, color: AppTheme.textSecondary),
+                const SizedBox(width: 6),
+                Text(
+                  reserva.fechaHoraTexto,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppTheme.textSecondary),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+
+            // Personas
+            Row(
+              children: [
+                const Icon(Icons.people_alt_outlined, size: 15, color: AppTheme.textSecondary),
+                const SizedBox(width: 6),
+                Text(
+                  reserva.personasTexto,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppTheme.textSecondary),
+                ),
+              ],
+            ),
+
+            // Motivo de rechazo (si fue rechazada)
+            if (estado == ReservationStatus.rechazada &&
+                reserva.motivoRechazo.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Motivo: ${reserva.motivoRechazo}',
+                style: const TextStyle(
+                    fontSize: 12, color: Colors.redAccent),
+              ),
+            ],
+
+            const SizedBox(height: 12),
+
+            // Total + botones de acción
+            Row(
+              children: [
+                Text(
+                  reserva.totalTexto,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.primaryColor,
+                    fontSize: 15,
+                  ),
+                ),
+                const Spacer(),
+
+                // Botones solo si la reserva está en espera
+                if (estado.puedeGestionarNegocio) ...[
+                  TextButton.icon(
+                    onPressed: onReject,
+                    style:
+                        TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                    icon: const Icon(Icons.close_rounded, size: 16),
+                    label: const Text('Rechazar'),
+                  ),
+                  const SizedBox(width: 4),
+                  ElevatedButton.icon(
+                    onPressed: onAccept,
+                    icon: const Icon(Icons.check_rounded, size: 16),
+                    label: const Text('Aceptar'),
+                  ),
+                ],
+
+                // Marcar completada (solo si está aceptada)
+                if (estado == ReservationStatus.aceptada)
+                  OutlinedButton.icon(
+                    onPressed: onComplete,
+                    icon: const Icon(Icons.task_alt_rounded, size: 16),
+                    label: const Text('Completar'),
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
