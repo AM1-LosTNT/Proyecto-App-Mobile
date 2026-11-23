@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../core/app_error.dart';
 import '../models/cart_item.dart';
 import '../models/product_model.dart';
 import '../services/supabase_service.dart';
@@ -31,7 +32,10 @@ class CartProvider extends ChangeNotifier {
     try {
       _products = await SupabaseService().fetchProducts();
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(
+        e,
+        fallback: 'No pudimos cargar la tienda. Revisa tu conexión.',
+      );
     } finally {
       _loading = false;
       notifyListeners();

@@ -3,8 +3,11 @@ import 'dart:typed_data';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../core/app_error.dart';
+import '../models/cart_item.dart';
 import '../models/micro_route.dart';
+import '../models/order_model.dart';
 import '../models/place_model.dart';
+import '../models/product_model.dart';
 import '../models/reserva.dart';
 import '../models/review_model.dart';
 import '../models/user_profile.dart';
@@ -593,6 +596,130 @@ class SupabaseService {
       case ReservationStatus.rechazada:
         return null;
     }
+  }
+
+  // ==========================================
+  // TIENDA DE SOUVENIRS Y PEDIDOS
+  // ==========================================
+  /// Catálogo de productos activos de la tienda.
+  Future<List<ProductModel>> fetchProducts() async {
+    final data = await client
+        .from('productos')
+        .select()
+        .eq('activo', true)
+        .order('created_at', ascending: true);
+
+    return (data as List)
+        .map((e) => ProductModel.fromMap(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Crea el pedido y su detalle en una sola transacción.
+  Future<OrderModel> crearPedido({
+    required List<CartItem> items,
+    String? direccionEntrega,
+    String? telefonoContacto,
+    String? notas,
+  }) async {
+    final user = currentUser;
+    if (user == null) {
+      throw const AppMessageException(
+        'Debes iniciar sesión para finalizar tu compra.',
+      );
+    }
+    if (items.isEmpty) {
+      throw const AppMessageException(
+        'Tu carrito está vacío. Agrega productos antes de continuar.',
+      );
+    }
+
+    final uuid = RegExp(
+      r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+      r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+    );
+    for (final item in items) {
+      if (!uuid.hasMatch(item.product.id)) {
+        throw const AppMessageException(
+          'Uno de los productos de tu carrito ya no está disponible. '
+          'Elimínalo y vuelve a intentarlo.',
+        );
+      }
+    }
+
+    final total = items.fold<double>(0, (sum, item) => sum + item.subtotal);
+
+    try {
+      final data = await client.rpc('crear_pedido_completo', params: {
+        'p_id_turista': user.id,
+        'p_total': total,
+        'p_direccion': (direccionEntrega ?? '').trim(),
+        'p_telefono': (telefonoContacto ?? '').trim(),
+        'p_notas': (notas ?? '').trim(),
+        'p_items': items.map((item) => item.toMap()).toList(),
+      });
+
+      final map = (data as Map).cast<String, dynamic>();
+      final idPedido = map['id_pedido']?.toString() ?? '';
+
+      return OrderModel(
+        id: idPedido,
+        idTurista: user.id,
+        total: (map['total'] as num?)?.toDouble() ?? total,
+        estado: 'Pendiente',
+        metodoPago: 'QR_SIMPLE',
+        codigoReferencia: map['codigo_referencia']?.toString() ?? '',
+        direccionEntrega: direccionEntrega,
+        telefonoContacto: telefonoContacto,
+        notas: notas,
+        createdAt: DateTime.now(),
+        items: [
+          for (final item in items)
+            OrderItemModel(
+              id: 0,
+              idPedido: idPedido,
+              idProducto: item.product.id,
+              nombreProducto: item.product.nombre,
+              cantidad: item.quantity,
+              precioUnitario: item.product.precio,
+              subtotal: item.subtotal,
+            ),
+        ],
+      );
+    } on PostgrestException catch (e) {
+      if (e.code == 'PGRST202' ||
+          e.message.toLowerCase().contains('crear_pedido_completo')) {
+        throw const AppMessageException(
+          'La tienda necesita una actualización en la base de datos. '
+          'Contacta al administrador.',
+        );
+      }
+      rethrow;
+    }
+  }
+
+  /// Pedidos del usuario actual, con el detalle de cada uno.
+  Future<List<OrderModel>> getMisPedidos() async {
+    final user = currentUser;
+    if (user == null) {
+      throw const AppMessageException(
+        'Debes iniciar sesión para ver tus pedidos.',
+      );
+    }
+
+    final data = await client
+        .from('pedidos')
+        .select('*, detalle_pedidos(*)')
+        .eq('id_turista', user.id)
+        .order('created_at', ascending: false);
+
+    return (data as List).map((row) {
+      final map = row as Map<String, dynamic>;
+      final rawItems = (map['detalle_pedidos'] as List?) ?? const [];
+      final items = rawItems
+          .map((e) => OrderItemModel.fromMap(e as Map<String, dynamic>))
+          .toList();
+      return OrderModel.fromMap(map, items);
+    }).toList();
   }
 
   // ==========================================

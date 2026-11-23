@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'providers/app_state.dart';
+import 'providers/cart_provider.dart';
 import 'screens/auth/auth_gate.dart';
 import 'theme/app_theme.dart';
 
@@ -23,8 +24,11 @@ class TurisApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => AppState()..initialize(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AppState()..initialize()),
+        ChangeNotifierProvider(create: (_) => CartProvider()),
+      ],
       child: MaterialApp(
         title: 'TurisApp',
         debugShowCheckedModeBanner: false,

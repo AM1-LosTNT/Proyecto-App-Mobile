@@ -3,9 +3,12 @@ import 'package:provider/provider.dart';
 
 import '../../models/place_model.dart';
 import '../../providers/app_state.dart';
+import '../../providers/cart_provider.dart';
 import '../../theme/app_theme.dart';
 import '../business/business_dashboard_screen.dart';
 import '../details/details_screen.dart';
+import '../shop/cart_screen.dart';
+import '../shop/shop_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final VoidCallback onProfileTap;
@@ -78,6 +81,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           ],
                         ),
                       ),
+                      const SizedBox(width: 8),
+                      _ShopHeaderButton(
+                        cartCount: context.watch<CartProvider>().totalItemCount,
+                      ),
+                      const SizedBox(width: 12),
                       GestureDetector(
                         onTap: widget.onProfileTap,
                         child: _Avatar(
@@ -295,6 +303,79 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ShopHeaderButton extends StatelessWidget {
+  final int cartCount;
+
+  const _ShopHeaderButton({required this.cartCount});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Material(
+          color: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ShopScreen()),
+              );
+            },
+            child: Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: const Icon(
+                Icons.storefront_rounded,
+                color: AppTheme.primaryColor,
+              ),
+            ),
+          ),
+        ),
+        if (cartCount > 0)
+          Positioned(
+            top: -4,
+            right: -4,
+            child: GestureDetector(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const CartScreen()),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                constraints: const BoxConstraints(minWidth: 20),
+                decoration: BoxDecoration(
+                  color: AppTheme.secondaryColor,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: Text(
+                  cartCount > 99 ? '99+' : '$cartCount',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
