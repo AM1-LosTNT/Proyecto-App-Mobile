@@ -43,3 +43,21 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# APKs generados (no subir al repositorio)
+/dist/
+*.apk
+*.aab
+
+# Claves y secretos (NUNCA subir)
+.env
+key.properties
+*.jks
+*.keystore
+google-services.json
+secrets.dart
+service_account.json
+
+# Archivos temporales desconocidos
+para
+solo
