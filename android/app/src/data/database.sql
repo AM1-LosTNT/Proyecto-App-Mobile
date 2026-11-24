@@ -432,3 +432,42 @@ VALUES (
     -17.783327, 
     -63.182140  
 );
+
+-- ==============================================================================
+-- 13. COBROS QR ESTÁTICO (BS 0), ESCUCHA BAJO DEMANDA Y AUDITORÍA DE SALDO
+-- ==============================================================================
+CREATE TABLE IF NOT EXISTS public.pagos_qr (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    usuario_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    id_pedido TEXT REFERENCES public.pedidos(id) ON DELETE SET NULL,
+    id_reserva TEXT REFERENCES public.reservas(id) ON DELETE SET NULL,
+    referencia_interna TEXT UNIQUE NOT NULL,
+    monto_esperado NUMERIC(12, 2) NOT NULL CHECK (monto_esperado > 0),
+    monto_recibido NUMERIC(12, 2),
+    moneda TEXT NOT NULL DEFAULT 'BOB',
+    glosa TEXT,
+    estado TEXT NOT NULL DEFAULT 'PENDIENTE'
+        CHECK (estado IN ('PENDIENTE', 'VALIDADO_NOTIF', 'PAGADO', 'EXPIRADO', 'RECHAZADO')),
+    pagado_por TEXT,
+    notificacion_texto TEXT,
+    evento_hash TEXT UNIQUE,
+    saldo_anterior NUMERIC(12, 2),
+    saldo_nuevo NUMERIC(12, 2),
+    validado_por_admin UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    expira_en TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '10 minutes'),
+    pagado_en TIMESTAMPTZ,
+    creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.configuracion_cobros (
+    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    escucha_activa BOOLEAN NOT NULL DEFAULT FALSE,
+    qr_estatico_url TEXT,
+    titular_cuenta TEXT DEFAULT 'Christopher',
+    banco_nombre TEXT DEFAULT 'Banco Unión / Yape',
+    actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO public.configuracion_cobros (id, escucha_activa, titular_cuenta, banco_nombre)
+VALUES (1, FALSE, 'Christopher', 'Banco Unión / Yape')
+ON CONFLICT (id) DO NOTHING;

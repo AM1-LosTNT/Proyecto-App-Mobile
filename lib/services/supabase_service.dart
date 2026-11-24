@@ -6,6 +6,7 @@ import '../core/app_error.dart';
 import '../models/cart_item.dart';
 import '../models/micro_route.dart';
 import '../models/order_model.dart';
+import '../models/pago_qr_model.dart';
 import '../models/place_model.dart';
 import '../models/product_model.dart';
 import '../models/reserva.dart';
@@ -746,6 +747,130 @@ class SupabaseService {
       // Si la función aún no está instalada, al menos se elimina el perfil.
       await client.from('usuarios').delete().eq('id', id);
     }
+  }
+
+  // Tienda y Stock (Admin)
+  Future<List<ProductModel>> adminGetProducts({bool includeInactive = true}) async {
+    var query = client.from('productos').select();
+    if (!includeInactive) {
+      query = query.eq('activo', true);
+    }
+    final data = await query.order('created_at', ascending: false);
+    return (data as List)
+        .map((e) => ProductModel.fromMap(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> adminUpdateProductStock(String id, int stock) async {
+    await client.from('productos').update({
+      'stock': stock,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', id);
+  }
+
+  Future<void> adminUpdateProduct(String id, Map<String, dynamic> fields) async {
+    final payload = Map<String, dynamic>.from(fields);
+    payload['updated_at'] = DateTime.now().toUtc().toIso8601String();
+    await client.from('productos').update(payload).eq('id', id);
+  }
+
+  Future<ProductModel> adminCreateProduct(Map<String, dynamic> fields) async {
+    final payload = Map<String, dynamic>.from(fields);
+    payload['created_at'] = DateTime.now().toUtc().toIso8601String();
+    payload['updated_at'] = DateTime.now().toUtc().toIso8601String();
+    final data = await client.from('productos').insert(payload).select().single();
+    return ProductModel.fromMap(data);
+  }
+
+  Future<void> adminDeleteProduct(String id) async {
+    await client.from('productos').delete().eq('id', id);
+  }
+
+  // Pedidos y Pagos (Admin)
+  Future<List<OrderModel>> adminGetAllOrders() async {
+    final data = await client
+        .from('pedidos')
+        .select('*, detalle_pedidos(*), usuarios:id_turista(nombre, email, telefono)')
+        .order('created_at', ascending: false);
+
+    return (data as List).map((row) {
+      final map = row as Map<String, dynamic>;
+      final rawItems = (map['detalle_pedidos'] as List?) ?? const [];
+      final items = rawItems
+          .map((e) => OrderItemModel.fromMap(e as Map<String, dynamic>))
+          .toList();
+      return OrderModel.fromMap(map, items);
+    }).toList();
+  }
+
+  Future<void> adminUpdateOrderStatus(String orderId, String newStatus) async {
+    await client.from('pedidos').update({
+      'estado': newStatus,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', orderId);
+
+    // Si se cancela el pedido, rechazar pagos pendientes asociados
+    if (newStatus.toLowerCase() == 'cancelado') {
+      try {
+        await client.from('pagos_historial').update({
+          'estado': 'Rechazado',
+        }).eq('id_pedido', orderId).eq('estado', 'Pendiente');
+      } catch (_) {}
+    }
+  }
+
+  Future<List<PaymentRecordModel>> adminGetAllPayments() async {
+    final data = await client
+        .from('pagos_historial')
+        .select('*, usuarios:id_usuario(nombre, email)')
+        .order('created_at', ascending: false);
+
+    return (data as List)
+        .map((e) => PaymentRecordModel.fromMap(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> adminUpdatePaymentStatus(String paymentId, String newStatus) async {
+    await client.from('pagos_historial').update({
+      'estado': newStatus,
+    }).eq('id', paymentId);
+  }
+
+  Future<List<PagoQrModel>> adminGetAllPagosQr() async {
+    try {
+      final data = await client
+          .from('pagos_qr')
+          .select()
+          .order('creado_en', ascending: false);
+
+      return (data as List)
+          .map((e) => PagoQrModel.fromMap(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> adminConfirmarAumentoSaldo({
+    required String pagoId,
+    required double saldoAnterior,
+    required double saldoNuevo,
+  }) async {
+    // La validación de rol admin y de la diferencia de saldo se hace en
+    // PostgreSQL (función `confirmar_pago_qr`), no en el cliente.
+    await client.rpc('confirmar_pago_qr', params: {
+      'p_pago_id': pagoId,
+      'p_saldo_anterior': saldoAnterior,
+      'p_saldo_nuevo': saldoNuevo,
+    });
+  }
+
+  /// Confirmación manual de pago (respaldo): marca el cobro como pagado
+  /// sin escribir saldos. La validación de rol admin ocurre en PostgreSQL.
+  Future<void> adminConfirmarPagoManual(String pagoId) async {
+    await client.rpc('confirmar_pago_qr', params: {
+      'p_pago_id': pagoId,
+    });
   }
 
   // ==========================================

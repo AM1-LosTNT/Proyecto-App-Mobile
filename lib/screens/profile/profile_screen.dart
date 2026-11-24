@@ -234,14 +234,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 onPickAvatar: _pickAvatar,
                 onPickCover: _pickCover,
               ),
-              Transform.translate(
-                offset: const Offset(0, -26),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
                           Expanded(
                             child: _StatCard(
                               icon: Icons.bookmark_rounded,
@@ -376,7 +374,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ],
                   ),
                 ),
-              ),
             ],
           ),
         ),
@@ -414,132 +411,174 @@ class _ProfileHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      clipBehavior: Clip.none,
+    IconData roleIcon = Icons.person_pin_circle_rounded;
+    Color roleColor = AppTheme.primaryColor;
+    final upperRole = roleLabel.toUpperCase();
+    if (upperRole.contains('ADMIN')) {
+      roleIcon = Icons.admin_panel_settings_rounded;
+      roleColor = Colors.indigo;
+    } else if (upperRole.contains('NEGOCIO') || isBusiness) {
+      roleIcon = Icons.storefront_rounded;
+      roleColor = AppTheme.secondaryColor;
+    }
+
+    return Column(
       children: [
-        Container(
-          height: 220,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [AppTheme.primaryColor, AppTheme.primaryLight],
-            ),
-          ),
-          child: coverUrl.isNotEmpty
-              ? Image.network(
-                  coverUrl,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                )
-              : null,
-        ),
-        if (coverUrl.isNotEmpty)
-          Positioned.fill(
-            child: Container(
-              height: 220,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.black.withValues(alpha: 0.35),
-                    Colors.black.withValues(alpha: 0.55),
+        SizedBox(
+          height: 195,
+          child: Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.topCenter,
+            children: [
+              Container(
+                height: 140,
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [AppTheme.primaryColor, AppTheme.primaryLight],
+                  ),
+                ),
+                child: coverUrl.isNotEmpty
+                    ? Image.network(
+                        coverUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      )
+                    : null,
+              ),
+              if (coverUrl.isNotEmpty)
+                Container(
+                  height: 140,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: 0.35),
+                        Colors.black.withValues(alpha: 0.55),
+                      ],
+                    ),
+                  ),
+                ),
+              if (isBusiness)
+                Positioned(
+                  top: 16,
+                  right: 16,
+                  child: _CircleAction(
+                    loading: uploadingCover,
+                    icon: Icons.photo_camera_back_rounded,
+                    onTap: onPickCover,
+                    tooltip: 'Cambiar portada',
+                  ),
+                ),
+              Positioned(
+                top: 85,
+                child: Stack(
+                  children: [
+                    Container(
+                      width: 104,
+                      height: 104,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 4),
+                        color: Colors.white,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 14,
+                            offset: const Offset(0, 5),
+                          ),
+                        ],
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: avatarUrl.isNotEmpty
+                          ? Image.network(
+                              avatarUrl,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => _initialAvatar(),
+                            )
+                          : _initialAvatar(),
+                    ),
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: _CircleAction(
+                        loading: uploadingAvatar,
+                        icon: Icons.photo_camera_rounded,
+                        onTap: onPickAvatar,
+                        tooltip: 'Cambiar foto',
+                        small: true,
+                      ),
+                    ),
                   ],
                 ),
               ),
-            ),
-          ),
-        if (isBusiness)
-          Positioned(
-            top: 80,
-            right: 16,
-            child: _CircleAction(
-              loading: uploadingCover,
-              icon: Icons.photo_camera_back_rounded,
-              onTap: onPickCover,
-              tooltip: 'Cambiar portada',
-            ),
-          ),
-        Padding(
-          padding: const EdgeInsets.only(top: 70),
-          child: Column(
-            children: [
-              Stack(
-                children: [
-                  Container(
-                    width: 108,
-                    height: 108,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 4),
-                      color: Colors.white,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.15),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6),
-                        ),
-                      ],
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: avatarUrl.isNotEmpty
-                        ? Image.network(
-                            avatarUrl,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => _initialAvatar(),
-                          )
-                        : _initialAvatar(),
-                  ),
-                  Positioned(
-                    bottom: 0,
-                    right: 0,
-                    child: _CircleAction(
-                      loading: uploadingAvatar,
-                      icon: Icons.photo_camera_rounded,
-                      onTap: onPickAvatar,
-                      tooltip: 'Cambiar foto',
-                      small: true,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                profileName,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                decoration: BoxDecoration(
-                  color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  roleLabel,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.primaryColor,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                email,
-                style: const TextStyle(
-                    fontSize: 13, color: AppTheme.textSecondary),
-              ),
-              const SizedBox(height: 20),
             ],
           ),
         ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Text(
+            profileName,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.textPrimary,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: roleColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: roleColor.withValues(alpha: 0.3),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(roleIcon, size: 16, color: roleColor),
+              const SizedBox(width: 6),
+              Text(
+                roleLabel,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
+                  color: roleColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (email.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              email,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
       ],
     );
   }

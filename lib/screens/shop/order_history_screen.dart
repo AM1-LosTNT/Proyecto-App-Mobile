@@ -7,6 +7,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/app_feedback.dart';
 import '../../widgets/payment_details.dart';
 import 'payment_proof_screen.dart';
+import 'qr_static_cobro_screen.dart';
 
 class OrderHistoryScreen extends StatefulWidget {
   const OrderHistoryScreen({super.key});
@@ -397,6 +398,27 @@ class _OrderDetailSheet extends StatelessWidget {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => QrStaticCobroScreen(
+                          monto: order.total,
+                          idPedido: order.id,
+                          glosa: 'Pedido #${order.codigoReferencia}',
+                        ),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.qr_code_scanner_rounded),
+                  label: const Text('Pagar con QR de Bs 0 (Yape)'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
                   onPressed: () async {
                     final navigator = Navigator.of(context);
                     final done = await navigator.push<bool>(
@@ -409,7 +431,7 @@ class _OrderDetailSheet extends StatelessWidget {
                     }
                   },
                   icon: const Icon(Icons.upload_file_rounded),
-                  label: const Text('Subir comprobante de pago'),
+                  label: const Text('Subir comprobante manual'),
                 ),
               ),
             ],

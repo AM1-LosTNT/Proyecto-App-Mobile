@@ -42,6 +42,8 @@ class OrderModel {
   final String? notas;
   final DateTime createdAt;
   final List<OrderItemModel> items;
+  final String? turistaNombre;
+  final String? turistaEmail;
 
   OrderModel({
     required this.id,
@@ -55,9 +57,12 @@ class OrderModel {
     this.notas,
     required this.createdAt,
     this.items = const [],
+    this.turistaNombre,
+    this.turistaEmail,
   });
 
   factory OrderModel.fromMap(Map<String, dynamic> map, [List<OrderItemModel>? items]) {
+    final usuario = map['usuarios'] is Map ? map['usuarios'] as Map<String, dynamic> : null;
     return OrderModel(
       id: map['id']?.toString() ?? '',
       idTurista: map['id_turista']?.toString() ?? '',
@@ -72,13 +77,16 @@ class OrderModel {
           ? DateTime.tryParse(map['created_at'].toString()) ?? DateTime.now()
           : DateTime.now(),
       items: items ?? [],
+      turistaNombre: usuario?['nombre'] as String? ?? map['turista_nombre'] as String?,
+      turistaEmail: usuario?['email'] as String? ?? map['turista_email'] as String?,
     );
   }
 }
 
 class PaymentRecordModel {
   final String id;
-  final String idPedido;
+  final String? idPedido;
+  final String? idReserva;
   final String idUsuario;
   final String? bancoOrigen;
   final String numeroReferenciaBanco;
@@ -90,10 +98,13 @@ class PaymentRecordModel {
   final String estado;
   final Map<String, dynamic>? metadatosExtraccion;
   final DateTime createdAt;
+  final String? usuarioNombre;
+  final String? usuarioEmail;
 
   PaymentRecordModel({
     required this.id,
-    required this.idPedido,
+    this.idPedido,
+    this.idReserva,
     required this.idUsuario,
     this.bancoOrigen,
     required this.numeroReferenciaBanco,
@@ -105,12 +116,16 @@ class PaymentRecordModel {
     required this.estado,
     this.metadatosExtraccion,
     required this.createdAt,
+    this.usuarioNombre,
+    this.usuarioEmail,
   });
 
   factory PaymentRecordModel.fromMap(Map<String, dynamic> map) {
+    final usuario = map['usuarios'] is Map ? map['usuarios'] as Map<String, dynamic> : null;
     return PaymentRecordModel(
       id: map['id']?.toString() ?? '',
-      idPedido: map['id_pedido']?.toString() ?? '',
+      idPedido: map['id_pedido']?.toString(),
+      idReserva: map['id_reserva']?.toString(),
       idUsuario: map['id_usuario']?.toString() ?? '',
       bancoOrigen: map['banco_origen'],
       numeroReferenciaBanco: map['numero_referencia_banco'] ?? '',
@@ -126,6 +141,8 @@ class PaymentRecordModel {
       createdAt: map['created_at'] != null
           ? DateTime.tryParse(map['created_at'].toString()) ?? DateTime.now()
           : DateTime.now(),
+      usuarioNombre: usuario?['nombre'] as String? ?? map['usuario_nombre'] as String?,
+      usuarioEmail: usuario?['email'] as String? ?? map['usuario_email'] as String?,
     );
   }
 }

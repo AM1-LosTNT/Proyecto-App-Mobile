@@ -39,12 +39,20 @@ class _SplashScreen extends StatelessWidget {
             colors: [AppTheme.primaryColor, AppTheme.primaryLight],
           ),
         ),
-        child: const Center(
+        child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.travel_explore_rounded, size: 72, color: Colors.white),
-              SizedBox(height: 16),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: Image.asset(
+                  'assets/images/logo.png',
+                  width: 100,
+                  height: 100,
+                  fit: BoxFit.contain,
+                ),
+              ),
+              const SizedBox(height: 16),
               Text(
                 'TurisApp',
                 style: TextStyle(

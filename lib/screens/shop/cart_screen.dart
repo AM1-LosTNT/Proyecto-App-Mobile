@@ -10,6 +10,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/app_feedback.dart';
 import '../../widgets/payment_details.dart';
 import 'order_history_screen.dart';
+import 'qr_static_cobro_screen.dart';
 
 class CartScreen extends StatelessWidget {
   const CartScreen({super.key});
@@ -572,7 +573,7 @@ class _OrderSuccessDialog extends StatelessWidget {
           onPressed: () => Navigator.pop(context),
           child: const Text('Cerrar'),
         ),
-        ElevatedButton(
+        OutlinedButton(
           onPressed: () {
             final navigator = Navigator.of(context);
             navigator.pop();
@@ -583,6 +584,24 @@ class _OrderSuccessDialog extends StatelessWidget {
             );
           },
           child: const Text('Mis pedidos'),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
+          icon: const Icon(Icons.qr_code_scanner_rounded, size: 16),
+          label: const Text('Pagar con QR (Yape)'),
+          onPressed: () {
+            final navigator = Navigator.of(context);
+            navigator.pop();
+            navigator.push(
+              MaterialPageRoute(
+                builder: (_) => QrStaticCobroScreen(
+                  monto: order.total,
+                  idPedido: order.id,
+                  glosa: 'Pedido #${order.codigoReferencia}',
+                ),
+              ),
+            );
+          },
         ),
       ],
     );

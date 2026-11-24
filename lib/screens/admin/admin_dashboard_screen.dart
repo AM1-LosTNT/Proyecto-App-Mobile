@@ -1,11 +1,17 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
+import '../../models/order_model.dart';
+import '../../models/pago_qr_model.dart';
 import '../../models/place_model.dart';
+import '../../models/product_model.dart';
 import '../../models/reserva.dart';
 import '../../models/user_profile.dart';
 import '../../providers/app_state.dart';
 import '../../services/supabase_service.dart';
+import '../../services/yape_notification_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/reservation_status_chip.dart';
 import '../business/place_form_screen.dart';
@@ -24,12 +30,68 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   List<DestinoLugar> _places = [];
   List<CategoriaItem> _categorias = [];
   List<Reserva> _reservas = [];
+  List<ProductModel> _products = [];
+  List<OrderModel> _orders = [];
+  List<PaymentRecordModel> _payments = [];
+  List<PagoQrModel> _pagosQr = [];
   bool _loading = true;
+
+  Timer? _pagosDebounce;
+  Timer? _pagosPoll;
+  final _yapeService = YapeNotificationService();
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (context.read<AppState>().isAdmin) {
+        _yapeService.init();
+        _yapeService.addListener(_onYapeEvent);
+
+        // Respaldo por si Realtime se cae: refresco silencioso cada 20 s.
+        _pagosPoll = Timer.periodic(const Duration(seconds: 20), (_) {
+          if (!mounted) return;
+          _reloadPagosQr();
+          _reloadOrders();
+        });
+      }
+      _loadAll();
+    });
+  }
+
+  /// Refresca cobros y pedidos cuando Realtime avisa de un cambio.
+  void _onYapeEvent() {
+    _pagosDebounce?.cancel();
+    _pagosDebounce = Timer(
+      const Duration(milliseconds: 700),
+      () {
+        _reloadPagosQr();
+        _reloadOrders();
+      },
+    );
+  }
+
+  Future<void> _reloadPagosQr() async {
+    try {
+      final pagos = await _service.adminGetAllPagosQr();
+      if (mounted) setState(() => _pagosQr = pagos);
+    } catch (_) {}
+  }
+
+  Future<void> _reloadOrders() async {
+    try {
+      final orders = await _service.adminGetAllOrders();
+      if (mounted) setState(() => _orders = orders);
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _pagosDebounce?.cancel();
+    _pagosPoll?.cancel();
+    _yapeService.removeListener(_onYapeEvent);
+    super.dispose();
   }
 
   Future<void> _loadAll() async {
@@ -40,6 +102,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         _service.getDestinos(includeInactive: true),
         _service.getCategorias(),
         _service.getAllReservas(),
+        _service.adminGetProducts(includeInactive: true),
+        _service.adminGetAllOrders(),
+        _service.adminGetAllPayments(),
+        _service.adminGetAllPagosQr(),
       ]);
       if (!mounted) return;
       setState(() {
@@ -47,6 +113,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         _places = results[1] as List<DestinoLugar>;
         _categorias = results[2] as List<CategoriaItem>;
         _reservas = results[3] as List<Reserva>;
+        _products = results[4] as List<ProductModel>;
+        _orders = results[5] as List<OrderModel>;
+        _payments = results[6] as List<PaymentRecordModel>;
+        _pagosQr = results[7] as List<PagoQrModel>;
         _loading = false;
       });
     } catch (e) {
@@ -188,7 +258,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     }
   }
 
-  Future<bool?> _confirm(String title, String content) {
+  Future<bool?> _confirm(
+    String title,
+    String content, {
+    String confirmText = 'Eliminar',
+    Color confirmColor = Colors.redAccent,
+  }) {
     return showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -200,9 +275,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: confirmColor),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Eliminar'),
+            child: Text(confirmText),
           ),
         ],
       ),
@@ -333,6 +408,462 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     }
   }
 
+  Future<void> _updateStock(String id, int newStock) async {
+    if (newStock < 0) return;
+    try {
+      await _service.adminUpdateProductStock(id, newStock);
+      setState(() {
+        final idx = _products.indexWhere((p) => p.id == id);
+        if (idx != -1) {
+          final old = _products[idx];
+          _products[idx] = ProductModel(
+            id: old.id,
+            nombre: old.nombre,
+            descripcion: old.descripcion,
+            precio: old.precio,
+            stock: newStock,
+            imagenUrl: old.imagenUrl,
+            categoria: old.categoria,
+            activo: old.activo,
+          );
+        }
+      });
+      _snack('Stock actualizado a $newStock.', success: true);
+    } catch (e) {
+      _snack('No se pudo actualizar el stock: $e');
+    }
+  }
+
+  Future<void> _changeProductPhoto(ProductModel product) async {
+    final picker = ImagePicker();
+    final urlController = TextEditingController(text: product.imagenUrl);
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Cambiar foto de "${product.nombre}"'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (urlController.text.isNotEmpty)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.network(
+                    urlController.text,
+                    height: 120,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      height: 120,
+                      color: Colors.grey.shade200,
+                      child: const Center(
+                        child: Text('Vista previa no disponible'),
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.photo_library_rounded),
+                label: const Text('Subir desde galería'),
+                onPressed: () async {
+                  final xFile = await picker.pickImage(
+                    source: ImageSource.gallery,
+                    maxWidth: 1024,
+                    imageQuality: 85,
+                  );
+                  if (xFile != null) {
+                    try {
+                      final bytes = await xFile.readAsBytes();
+                      final url = await _service.uploadImage(
+                        bucket: 'imagenes',
+                        folder: 'productos',
+                        bytes: bytes,
+                        fileName: xFile.name,
+                      );
+                      setDialogState(() {
+                        urlController.text = url;
+                      });
+                    } catch (e) {
+                      _snack('Error al subir imagen: $e');
+                    }
+                  }
+                },
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: urlController,
+                decoration: const InputDecoration(
+                  labelText: 'O pega la URL de la imagen',
+                  hintText: 'https://...',
+                ),
+                onChanged: (_) => setDialogState(() {}),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, urlController.text.trim()),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result == null || result.isEmpty || result == product.imagenUrl) return;
+
+    try {
+      await _service.adminUpdateProduct(product.id, {'imagen_url': result});
+      await _loadAll();
+      _snack('Foto de producto actualizada.', success: true);
+    } catch (e) {
+      _snack('No se pudo actualizar la imagen: $e');
+    }
+  }
+
+  Future<void> _editProduct({ProductModel? product}) async {
+    final isNew = product == null;
+    final nombre = TextEditingController(text: product?.nombre ?? '');
+    final descripcion = TextEditingController(text: product?.descripcion ?? '');
+    final precio = TextEditingController(
+      text: product != null ? product.precio.toString() : '',
+    );
+    final stock = TextEditingController(
+      text: product != null ? product.stock.toString() : '10',
+    );
+    final imagenUrl = TextEditingController(text: product?.imagenUrl ?? '');
+    var categoria = product?.categoria ?? 'souvenir';
+    var activo = product?.activo ?? true;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(isNew ? 'Nuevo producto' : 'Editar ${product.nombre}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nombre,
+                  decoration: const InputDecoration(labelText: 'Nombre *'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: descripcion,
+                  decoration: const InputDecoration(labelText: 'Descripción'),
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: precio,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration:
+                            const InputDecoration(labelText: 'Precio (Bs.) *'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextField(
+                        controller: stock,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'Stock *'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: imagenUrl,
+                        decoration: const InputDecoration(
+                          labelText: 'URL de imagen',
+                          hintText: 'https://...',
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.add_photo_alternate_rounded,
+                        color: AppTheme.primaryColor,
+                      ),
+                      tooltip: 'Subir desde dispositivo',
+                      onPressed: () async {
+                        final picker = ImagePicker();
+                        final xFile = await picker.pickImage(
+                          source: ImageSource.gallery,
+                          maxWidth: 1024,
+                          imageQuality: 85,
+                        );
+                        if (xFile != null) {
+                          try {
+                            final bytes = await xFile.readAsBytes();
+                            final url = await _service.uploadImage(
+                              bucket: 'imagenes',
+                              folder: 'productos',
+                              bytes: bytes,
+                              fileName: xFile.name,
+                            );
+                            setDialogState(() {
+                              imagenUrl.text = url;
+                            });
+                          } catch (e) {
+                            _snack('Error subiendo imagen: $e');
+                          }
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  value: categoria,
+                  decoration: const InputDecoration(labelText: 'Categoría'),
+                  items: const [
+                    DropdownMenuItem(
+                        value: 'souvenir', child: Text('Souvenirs')),
+                    DropdownMenuItem(
+                        value: 'ropa', child: Text('Ropa y Textiles')),
+                    DropdownMenuItem(
+                        value: 'accesorios', child: Text('Accesorios')),
+                    DropdownMenuItem(
+                        value: 'artesanias', child: Text('Artesanías')),
+                  ],
+                  onChanged: (val) =>
+                      setDialogState(() => categoria = val ?? 'souvenir'),
+                ),
+                const SizedBox(height: 10),
+                SwitchListTile(
+                  title: const Text('Producto Activo',
+                      style: TextStyle(fontSize: 14)),
+                  value: activo,
+                  onChanged: (val) => setDialogState(() => activo = val),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (saved != true) return;
+    if (nombre.text.trim().isEmpty ||
+        double.tryParse(precio.text.trim()) == null) {
+      _snack('El nombre y el precio válido son obligatorios.');
+      return;
+    }
+
+    try {
+      final pVal = double.parse(precio.text.trim());
+      final sVal = int.tryParse(stock.text.trim()) ?? 0;
+      final img = imagenUrl.text.trim().isNotEmpty
+          ? imagenUrl.text.trim()
+          : 'https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?w=600';
+
+      if (isNew) {
+        await _service.adminCreateProduct({
+          'nombre': nombre.text.trim(),
+          'descripcion': descripcion.text.trim(),
+          'precio': pVal,
+          'stock': sVal,
+          'imagen_url': img,
+          'categoria': categoria,
+          'activo': activo,
+        });
+        _snack('Producto creado exitosamente.', success: true);
+      } else {
+        await _service.adminUpdateProduct(product.id, {
+          'nombre': nombre.text.trim(),
+          'descripcion': descripcion.text.trim(),
+          'precio': pVal,
+          'stock': sVal,
+          'imagen_url': img,
+          'categoria': categoria,
+          'activo': activo,
+        });
+        _snack('Producto actualizado exitosamente.', success: true);
+      }
+      await _loadAll();
+    } catch (e) {
+      _snack('Error guardando producto: $e');
+    }
+  }
+
+  Future<void> _deleteProduct(ProductModel product) async {
+    final confirm = await _confirm(
+      'Eliminar producto',
+      '¿Deseas eliminar "${product.nombre}"? Si ya tiene pedidos históricos, se recomienda desactivarlo en su lugar.',
+      confirmText: 'Eliminar',
+    );
+    if (confirm != true) return;
+
+    try {
+      await _service.adminDeleteProduct(product.id);
+      await _loadAll();
+      _snack('Producto eliminado.', success: true);
+    } catch (e) {
+      _snack('No se pudo eliminar el producto: $e');
+    }
+  }
+
+  Future<void> _cancelOrder(OrderModel order) async {
+    final ref = order.codigoReferencia.isNotEmpty
+        ? order.codigoReferencia
+        : (order.id.length > 8 ? order.id.substring(0, 8) : order.id);
+    final confirm = await _confirm(
+      'Cancelar Pedido',
+      '¿Estás seguro de cancelar el pedido #$ref por Bs. ${order.total.toStringAsFixed(2)}? Esta acción cancelará el pedido y rechazará pagos pendientes.',
+      confirmText: 'Sí, Cancelar Pedido',
+      confirmColor: Colors.redAccent,
+    );
+    if (confirm != true) return;
+
+    try {
+      await _service.adminUpdateOrderStatus(order.id, 'Cancelado');
+      await _loadAll();
+      _snack('Pedido cancelado.', success: true);
+    } catch (e) {
+      _snack('Error cancelando pedido: $e');
+    }
+  }
+
+  Future<void> _updateOrderStatus(OrderModel order, String newStatus) async {
+    try {
+      await _service.adminUpdateOrderStatus(order.id, newStatus);
+      await _loadAll();
+      _snack('Estado de pedido actualizado a $newStatus.', success: true);
+    } catch (e) {
+      _snack('Error actualizando pedido: $e');
+    }
+  }
+
+  Future<void> _updatePaymentStatus(
+      PaymentRecordModel payment, String newStatus) async {
+    try {
+      await _service.adminUpdatePaymentStatus(payment.id, newStatus);
+      if (newStatus == 'Rechazado' && payment.idPedido != null) {
+        await _service.adminUpdateOrderStatus(payment.idPedido!, 'Cancelado');
+      }
+      await _loadAll();
+      _snack('Pago actualizado a $newStatus.', success: true);
+    } catch (e) {
+      _snack('Error actualizando pago: $e');
+    }
+  }
+
+  /// Respaldo manual: el pago ya se completa solo con la notificación de Yape.
+  /// Esto solo se usa si la notificación no llegó al teléfono.
+  Future<void> _confirmarPagoManual(PagoQrModel pago) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.verified_rounded, color: Colors.green),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text('Marcar pago como completado',
+                  style: TextStyle(fontSize: 16)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Cobro #${pago.referenciaInterna}',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Monto: Bs. ${pago.montoEsperado.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.primaryColor,
+                    ),
+                  ),
+                  if ((pago.pagadoPor ?? '').isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text('Remitente: ${pago.pagadoPor}',
+                        style: const TextStyle(fontSize: 12)),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              'Normalmente el pago se completa solo cuando llega la notificación '
+              'de Yape. Usa esto únicamente si ya verificaste el saldo en tu '
+              'banca y la notificación no llegó.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Sí, marcar como pagado',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      await _service.adminConfirmarPagoManual(pago.id);
+      await _reloadPagosQr();
+      await _reloadOrders();
+      _snack('Pago marcado como completado.', success: true);
+    } catch (e) {
+      _snack('No se pudo confirmar el pago: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
@@ -356,7 +887,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final negocios = _users.where((u) => u.isBusiness).length;
 
     return DefaultTabController(
-      length: 5,
+      length: 7,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Administración'),
@@ -371,6 +902,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               Tab(text: 'Lugares'),
               Tab(text: 'Categorías'),
               Tab(text: 'Reservas'),
+              Tab(text: 'Tienda & Stock'),
+              Tab(text: 'Pedidos & Pagos'),
             ],
           ),
           actions: [
@@ -392,6 +925,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     places: _places.length,
                     categories: _categorias.length,
                     reservations: _reservas.length,
+                    products: _products.length,
+                    orders: _orders.length,
                     onRefresh: _loadAll,
                   ),
                   _UsersTab(
@@ -423,6 +958,23 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                     onStatusChanged: _changeReservaEstado,
                     onDelete: _deleteReserva,
                   ),
+                  _StoreStockTab(
+                    products: _products,
+                    onEdit: _editProduct,
+                    onChangePhoto: _changeProductPhoto,
+                    onUpdateStock: _updateStock,
+                    onDelete: _deleteProduct,
+                  ),
+                  _OrdersPaymentsTab(
+                    orders: _orders,
+                    payments: _payments,
+                    pagosQr: _pagosQr,
+                    onCancelOrder: _cancelOrder,
+                    onUpdateOrderStatus: _updateOrderStatus,
+                    onUpdatePaymentStatus: _updatePaymentStatus,
+                    onConfirmarPagoManual: _confirmarPagoManual,
+                    onRefresh: _loadAll,
+                  ),
                 ],
               ),
       ),
@@ -436,6 +988,8 @@ class _OverviewTab extends StatelessWidget {
   final int places;
   final int categories;
   final int reservations;
+  final int products;
+  final int orders;
   final Future<void> Function() onRefresh;
 
   const _OverviewTab({
@@ -444,6 +998,8 @@ class _OverviewTab extends StatelessWidget {
     required this.places,
     required this.categories,
     required this.reservations,
+    required this.products,
+    required this.orders,
     required this.onRefresh,
   });
 
@@ -459,6 +1015,10 @@ class _OverviewTab extends StatelessWidget {
           Colors.purple),
       _StatData('Reservas', '$reservations', Icons.receipt_long_rounded,
           Colors.teal),
+      _StatData('Productos', '$products', Icons.inventory_2_rounded,
+          Colors.orange),
+      _StatData('Pedidos', '$orders', Icons.shopping_bag_rounded,
+          Colors.deepPurple),
     ];
 
     return RefreshIndicator(
@@ -883,6 +1443,1277 @@ class _ReservationsTab extends StatelessWidget {
                       style: const TextStyle(fontSize: 11, color: Colors.redAccent),
                     ),
                   ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StoreStockTab extends StatelessWidget {
+  final List<ProductModel> products;
+  final void Function({ProductModel? product}) onEdit;
+  final void Function(ProductModel) onChangePhoto;
+  final void Function(String id, int newStock) onUpdateStock;
+  final void Function(ProductModel) onDelete;
+
+  const _StoreStockTab({
+    required this.products,
+    required this.onEdit,
+    required this.onChangePhoto,
+    required this.onUpdateStock,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: AppTheme.primaryColor,
+        icon: const Icon(Icons.add, color: Colors.white),
+        label:
+            const Text('Nuevo producto', style: TextStyle(color: Colors.white)),
+        onPressed: () => onEdit(),
+      ),
+      body: products.isEmpty
+          ? const Center(
+              child: Text(
+                'No hay productos registrados en la tienda.',
+                style: TextStyle(color: AppTheme.textSecondary),
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 80),
+              itemCount: products.length,
+              itemBuilder: (context, index) {
+                final product = products[index];
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  elevation: 2,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Thumbnail with button to change
+                        Stack(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Container(
+                                width: 80,
+                                height: 80,
+                                color: Colors.grey.shade100,
+                                child: Image.network(
+                                  product.imagenUrl,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => const Icon(
+                                    Icons.image_not_supported,
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              bottom: 0,
+                              right: 0,
+                              child: InkWell(
+                                onTap: () => onChangePhoto(product),
+                                child: Container(
+                                  padding: const EdgeInsets.all(4),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.primaryColor,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(
+                                    Icons.camera_alt,
+                                    size: 14,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(width: 12),
+                        // Information
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      product.nombre,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: product.activo
+                                          ? Colors.green.withValues(alpha: 0.12)
+                                          : Colors.grey.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      product.activo ? 'Activo' : 'Inactivo',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: product.activo
+                                            ? Colors.green.shade800
+                                            : Colors.grey.shade700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Bs. ${product.precio.toStringAsFixed(2)} · ${product.categoria}',
+                                style: const TextStyle(
+                                  color: AppTheme.primaryColor,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              // Stock controls: - Stock +
+                              Row(
+                                children: [
+                                  const Text(
+                                    'Stock:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: AppTheme.textSecondary,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade100,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: Colors.grey.shade300,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        InkWell(
+                                          onTap: product.stock > 0
+                                              ? () => onUpdateStock(
+                                                    product.id,
+                                                    product.stock - 1,
+                                                  )
+                                              : null,
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                          child: const Padding(
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 4,
+                                            ),
+                                            child: Icon(
+                                              Icons.remove,
+                                              size: 16,
+                                              color: Colors.black87,
+                                            ),
+                                          ),
+                                        ),
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                          ),
+                                          child: Text(
+                                            '${product.stock}',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 13,
+                                              color: product.stock == 0
+                                                  ? Colors.red
+                                                  : Colors.black87,
+                                            ),
+                                          ),
+                                        ),
+                                        InkWell(
+                                          onTap: () => onUpdateStock(
+                                            product.id,
+                                            product.stock + 1,
+                                          ),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                          child: const Padding(
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal: 8,
+                                              vertical: 4,
+                                            ),
+                                            child: Icon(
+                                              Icons.add,
+                                              size: 16,
+                                              color: Colors.black87,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Actions Popup
+                        PopupMenuButton<String>(
+                          onSelected: (val) {
+                            if (val == 'edit') onEdit(product: product);
+                            if (val == 'photo') onChangePhoto(product);
+                            if (val == 'delete') onDelete(product);
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(
+                              value: 'edit',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.edit, size: 18),
+                                  SizedBox(width: 8),
+                                  Text('Editar datos'),
+                                ],
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'photo',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.photo_camera, size: 18),
+                                  SizedBox(width: 8),
+                                  Text('Cambiar foto'),
+                                ],
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.delete,
+                                      size: 18, color: Colors.redAccent),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Eliminar',
+                                    style: TextStyle(color: Colors.redAccent),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _OrdersPaymentsTab extends StatefulWidget {
+  final List<OrderModel> orders;
+  final List<PaymentRecordModel> payments;
+  final List<PagoQrModel> pagosQr;
+  final void Function(OrderModel) onCancelOrder;
+  final void Function(OrderModel, String) onUpdateOrderStatus;
+  final void Function(PaymentRecordModel, String) onUpdatePaymentStatus;
+  final void Function(PagoQrModel) onConfirmarPagoManual;
+  final Future<void> Function() onRefresh;
+
+  const _OrdersPaymentsTab({
+    required this.orders,
+    required this.payments,
+    required this.pagosQr,
+    required this.onCancelOrder,
+    required this.onUpdateOrderStatus,
+    required this.onUpdatePaymentStatus,
+    required this.onConfirmarPagoManual,
+    required this.onRefresh,
+  });
+
+  @override
+  State<_OrdersPaymentsTab> createState() => _OrdersPaymentsTabState();
+}
+
+class _OrdersPaymentsTabState extends State<_OrdersPaymentsTab> {
+  final _adminService = SupabaseService();
+  int _subTabIndex = 0; // 0: Pedidos, 1: Comprobantes, 2: Yape QR
+
+  Widget _qrPlaceholder() {
+    return Container(
+      height: 170,
+      width: 170,
+      color: AppTheme.primaryColor.withValues(alpha: 0.06),
+      child: const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.qr_code_2_rounded,
+              size: 64, color: AppTheme.primaryColor),
+          SizedBox(height: 6),
+          Text(
+            'Sin QR configurado',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _subirQrEstatico(BuildContext context) async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1400,
+      imageQuality: 90,
+    );
+    if (file == null) return;
+
+    try {
+      final bytes = await file.readAsBytes();
+      final url = await _adminService.uploadImage(
+        bucket: 'imagenes',
+        folder: 'qrs',
+        bytes: bytes,
+        fileName: file.name,
+      );
+      await YapeNotificationService().actualizarQrEstatico(url);
+      await widget.onRefresh();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('QR estático actualizado correctamente.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('No se pudo subir el QR: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // Sub-tabs selector
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: ChoiceChip(
+                  label: Center(
+                    child: Text('Pedidos (${widget.orders.length})', style: const TextStyle(fontSize: 11)),
+                  ),
+                  selected: _subTabIndex == 0,
+                  onSelected: (_) => setState(() => _subTabIndex = 0),
+                  selectedColor: AppTheme.primaryColor.withValues(alpha: 0.15),
+                  labelStyle: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: _subTabIndex == 0
+                        ? AppTheme.primaryColor
+                        : AppTheme.textSecondary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: ChoiceChip(
+                  label: Center(
+                    child: Text('Comprobantes (${widget.payments.length})', style: const TextStyle(fontSize: 11)),
+                  ),
+                  selected: _subTabIndex == 1,
+                  onSelected: (_) => setState(() => _subTabIndex = 1),
+                  selectedColor: AppTheme.primaryColor.withValues(alpha: 0.15),
+                  labelStyle: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: _subTabIndex == 1
+                        ? AppTheme.primaryColor
+                        : AppTheme.textSecondary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: ChoiceChip(
+                  label: Center(
+                    child: Text('Yape QR (${widget.pagosQr.length})', style: const TextStyle(fontSize: 11)),
+                  ),
+                  selected: _subTabIndex == 2,
+                  onSelected: (_) => setState(() => _subTabIndex = 2),
+                  selectedColor: AppTheme.primaryColor.withValues(alpha: 0.15),
+                  labelStyle: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: _subTabIndex == 2
+                        ? AppTheme.primaryColor
+                        : AppTheme.textSecondary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _subTabIndex == 0
+              ? _buildOrdersList()
+              : _subTabIndex == 1
+                  ? _buildPaymentsList()
+                  : _buildYapeQrList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildYapeQrList() {
+    final yapeService = YapeNotificationService();
+
+    return ListenableBuilder(
+      listenable: yapeService,
+      builder: (context, _) {
+        final escucha = yapeService.escuchaActiva;
+
+        return RefreshIndicator(
+          onRefresh: widget.onRefresh,
+          child: ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              // QR estático de Bs 0 (configurable sin recompilar la app)
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.qr_code_2_rounded,
+                            color: AppTheme.primaryColor),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'QR estático de Bs 0',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Esta es la imagen que verán los clientes al pagar. '
+                      'Debe ser tu QR personal de Yape/Banca SIN monto fijo.',
+                      style: TextStyle(
+                          fontSize: 11.5, color: AppTheme.textSecondary),
+                    ),
+                    const SizedBox(height: 12),
+                    Center(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: (yapeService.qrEstaticoUrl ?? '').isNotEmpty
+                            ? Image.network(
+                                yapeService.qrEstaticoUrl!,
+                                height: 170,
+                                fit: BoxFit.contain,
+                                errorBuilder: (_, __, ___) =>
+                                    _qrPlaceholder(),
+                              )
+                            : _qrPlaceholder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.upload_rounded, size: 18),
+                        label: Text(
+                          (yapeService.qrEstaticoUrl ?? '').isEmpty
+                              ? 'Subir mi QR (Yape / Banca)'
+                              : 'Cambiar imagen del QR',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        onPressed: () => _subirQrEstatico(context),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 14),
+
+              // Permiso de acceso a notificaciones (Android)
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: yapeService.nativeAccessGranted
+                      ? Colors.green.shade50
+                      : Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: yapeService.nativeAccessGranted
+                        ? Colors.green.shade300
+                        : Colors.amber.shade400,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          yapeService.nativeAccessGranted
+                              ? Icons.notifications_active_rounded
+                              : Icons.notifications_off_outlined,
+                          color: yapeService.nativeAccessGranted
+                              ? Colors.green
+                              : Colors.orange.shade800,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            yapeService.nativeAccessGranted
+                                ? 'Acceso a notificaciones CONCEDIDO'
+                                : 'Falta conceder acceso a notificaciones',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                              color: yapeService.nativeAccessGranted
+                                  ? Colors.green.shade900
+                                  : Colors.orange.shade900,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      yapeService.nativeAccessGranted
+                          ? 'Este teléfono lee las notificaciones de Yape y completa los pagos automáticamente, aunque la app esté cerrada.'
+                          : 'Abre los ajustes de Android y activa "TurisApp" en Acceso a notificaciones. Sin esto, el sistema no puede detectar los pagos.',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: yapeService.nativeAccessGranted
+                            ? Colors.green.shade800
+                            : Colors.orange.shade900,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          icon: const Icon(Icons.settings_outlined, size: 16),
+                          label: const Text('Abrir ajustes',
+                              style: TextStyle(fontSize: 11.5)),
+                          onPressed: () async {
+                            await yapeService.abrirAjustesNotificaciones();
+                          },
+                        ),
+                        TextButton.icon(
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          icon: const Icon(Icons.refresh_rounded, size: 16),
+                          label: const Text('Ya lo activé, verificar',
+                              style: TextStyle(fontSize: 11.5)),
+                          onPressed: () async {
+                            await yapeService.reactivarEscuchaNativa(
+                              isAdmin: context.read<AppState>().isAdmin,
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 14),
+
+              // Estado del Listener en el dispositivo Admin (Ahorro de Batería)
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: escucha ? Colors.green.shade50 : Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: escucha ? Colors.green.shade400 : Colors.grey.shade300,
+                    width: 1.5,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: escucha ? Colors.green : Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          escucha
+                              ? '🟢 Escucha ACTIVA en tu teléfono'
+                              : '⚪ Escucha en REPOSO (Batería protegida)',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: escucha ? Colors.green.shade900 : Colors.grey.shade800,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      escucha
+                          ? 'Hay al menos un cobro pendiente. Cuando llegue la notificación de Yape con el monto exacto, el pago se completa solo.'
+                          : 'No hay cobros pendientes vigentes. El servicio está dormido para no gastar batería ni dar falsos positivos.',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: escucha ? Colors.green.shade800 : Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        side: BorderSide(
+                          color: escucha ? Colors.green.shade700 : Colors.grey.shade700,
+                        ),
+                      ),
+                      icon: const Icon(Icons.notifications_active_outlined, size: 16),
+                      label: const Text('Diagnóstico: simular notificación'),
+                      onPressed: () => _mostrarDialogoSimularNotificacion(context),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 14),
+
+              if (widget.pagosQr.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 40),
+                  child: Center(
+                    child: Text(
+                      'No hay cobros registrados en la tabla pagos_qr.',
+                      style: TextStyle(color: AppTheme.textSecondary),
+                    ),
+                  ),
+                )
+              else
+                ...widget.pagosQr.map((pago) => _buildPagoQrCard(pago)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPagoQrCard(PagoQrModel pago) {
+    Color statusColor = Colors.orange;
+    if (pago.isPagado) {
+      statusColor = Colors.green;
+    } else if (pago.isValidadoNotif) {
+      statusColor = Colors.blue;
+    } else if (pago.isExpirado || pago.isRechazado) {
+      statusColor = Colors.red;
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  pago.referenciaInterna,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+                  ),
+                  child: Text(
+                    pago.estado,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: statusColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Monto esperado: Bs. ${pago.montoEsperado.toStringAsFixed(2)}',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 15,
+                color: AppTheme.primaryColor,
+              ),
+            ),
+            if (pago.glosa != null && pago.glosa!.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                'Glosa: ${pago.glosa}',
+                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+              ),
+            ],
+            if (pago.pagadoPor != null) ...[
+              const SizedBox(height: 2),
+              Text(
+                'Pagado por: ${pago.pagadoPor}',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+            ],
+            if (pago.notificacionTexto != null) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Notificación: "${pago.notificacionTexto}"',
+                  style: TextStyle(fontSize: 11, color: Colors.blue.shade900),
+                ),
+              ),
+            ],
+
+            if (pago.isPagado && pago.saldoAnterior != null && pago.saldoNuevo != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Auditoría: Saldo Bs. ${pago.saldoAnterior!.toStringAsFixed(2)} ➔ Bs. ${pago.saldoNuevo!.toStringAsFixed(2)}',
+                style: const TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.w600),
+              ),
+            ],
+
+            const SizedBox(height: 10),
+
+            // PAGADO: confirmado solo, sin intervención del admin.
+            if (pago.isPagado)
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle_rounded,
+                        color: Colors.green, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        pago.isPagadoAutomatico
+                            ? 'Pago completado automáticamente por la notificación de Yape.'
+                            : 'Pago marcado como completado por el administrador.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.green.shade900,
+                          fontWeight: FontWeight.w600,
+                          height: 1.25,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            // PENDIENTE: respaldo manual, un toque, sin escribir saldos.
+            else if (pago.isPendiente)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: AppTheme.textSecondary,
+                  ),
+                  icon: const Icon(Icons.touch_app_outlined, size: 16),
+                  label: const Text(
+                    'Marcar como pagado (solo si no llegó la notificación)',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                  onPressed: () => widget.onConfirmarPagoManual(pago),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _mostrarDialogoSimularNotificacion(BuildContext context) {
+    final remitente = TextEditingController(text: 'Juan Pérez (Yape)');
+    final texto = TextEditingController(
+      text: '¡Te yapearon Bs 25.00! Juan Pérez te envió un pago en Yape.',
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Diagnóstico: simular notificación'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Prueba cómo tu app captura las notificaciones de Yape sin tener que hacer transferencias reales:',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: remitente,
+              decoration: const InputDecoration(labelText: 'Título / Remitente'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: texto,
+              maxLines: 2,
+              decoration: const InputDecoration(labelText: 'Texto de la notificación'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final ok = await YapeNotificationService().procesarNotificacion(
+                titulo: remitente.text.trim(),
+                texto: texto.text.trim(),
+              );
+              await widget.onRefresh();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      ok
+                          ? '¡Pago completado automáticamente!'
+                          : 'No se encontró cobro pendiente que coincida con el monto.',
+                    ),
+                    backgroundColor: ok ? Colors.green : Colors.redAccent,
+                  ),
+                );
+              }
+            },
+            child: const Text('Simular Llegada'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOrdersList() {
+    if (widget.orders.isEmpty) {
+      return const Center(
+        child: Text(
+          'No hay pedidos registrados en la tienda.',
+          style: TextStyle(color: AppTheme.textSecondary),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: widget.orders.length,
+      itemBuilder: (context, index) {
+        final order = widget.orders[index];
+        final ref = order.codigoReferencia.isNotEmpty
+            ? order.codigoReferencia
+            : (order.id.length > 8 ? order.id.substring(0, 8) : order.id);
+
+        Color statusColor = Colors.orange;
+        if (order.estado.toLowerCase() == 'pagado' ||
+            order.estado.toLowerCase() == 'entregado') {
+          statusColor = Colors.green;
+        } else if (order.estado.toLowerCase() == 'cancelado') {
+          statusColor = Colors.red;
+        }
+
+        final isPending = order.estado.toLowerCase() == 'pendiente';
+
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          elevation: 2,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Pedido #$ref',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                    PopupMenuButton<String>(
+                      initialValue: order.estado,
+                      onSelected: (val) =>
+                          widget.onUpdateOrderStatus(order, val),
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(
+                            value: 'Pendiente', child: Text('Pendiente')),
+                        PopupMenuItem(value: 'Pagado', child: Text('Pagado')),
+                        PopupMenuItem(
+                            value: 'Entregado', child: Text('Entregado')),
+                        PopupMenuItem(
+                            value: 'Cancelado', child: Text('Cancelado')),
+                      ],
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: statusColor.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: statusColor.withValues(alpha: 0.3)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              order.estado,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: statusColor,
+                              ),
+                            ),
+                            const Icon(Icons.arrow_drop_down, size: 14),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                if (order.turistaNombre != null || order.turistaEmail != null)
+                  Text(
+                    'Cliente: ${order.turistaNombre ?? 'Usuario'} · ${order.turistaEmail ?? ''}',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                if (order.telefonoContacto != null &&
+                    order.telefonoContacto!.isNotEmpty)
+                  Text(
+                    'Teléfono: ${order.telefonoContacto}',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                if (order.direccionEntrega != null &&
+                    order.direccionEntrega!.isNotEmpty)
+                  Text(
+                    'Dirección: ${order.direccionEntrega}',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                const SizedBox(height: 8),
+                // Items
+                if (order.items.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final item in order.items)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              children: [
+                                Text(
+                                  '${item.cantidad}x ',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    item.nombreProducto,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                                Text(
+                                  'Bs. ${item.subtotal.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Total: Bs. ${order.total.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 15,
+                        color: AppTheme.primaryColor,
+                      ),
+                    ),
+                    if (isPending)
+                      Row(
+                        children: [
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.redAccent,
+                              side: const BorderSide(color: Colors.redAccent),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            icon: const Icon(Icons.cancel_outlined, size: 14),
+                            label: const Text('Cancelar',
+                                style: TextStyle(fontSize: 12)),
+                            onPressed: () => widget.onCancelOrder(order),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            icon: const Icon(Icons.check, size: 14),
+                            label: const Text('Aprobar',
+                                style: TextStyle(fontSize: 12)),
+                            onPressed: () => widget.onUpdateOrderStatus(
+                                order, 'Pagado'),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPaymentsList() {
+    if (widget.payments.isEmpty) {
+      return const Center(
+        child: Text(
+          'No hay comprobantes de pago registrados.',
+          style: TextStyle(color: AppTheme.textSecondary),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: widget.payments.length,
+      itemBuilder: (context, index) {
+        final payment = widget.payments[index];
+        final isPending = payment.estado.toLowerCase() == 'pendiente';
+        Color statusColor = Colors.orange;
+        if (payment.estado.toLowerCase() == 'verificado' ||
+            payment.estado.toLowerCase() == 'aprobado') {
+          statusColor = Colors.green;
+        } else if (payment.estado.toLowerCase() == 'rechazado') {
+          statusColor = Colors.red;
+        }
+
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Ref: ${payment.numeroReferenciaBanco}',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        payment.estado,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: statusColor),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Monto: Bs. ${payment.montoValidado.toStringAsFixed(2)} · Banco: ${payment.bancoOrigen ?? 'QR'}',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                      color: AppTheme.primaryColor),
+                ),
+                if (payment.usuarioNombre != null ||
+                    payment.usuarioEmail != null)
+                  Text(
+                    'Usuario: ${payment.usuarioNombre ?? ''} (${payment.usuarioEmail ?? ''})',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+                if (payment.idPedido != null)
+                  Text(
+                    'Pedido ID: ${payment.idPedido}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+                if (payment.idReserva != null)
+                  Text(
+                    'Reserva ID: ${payment.idReserva}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    if (payment.comprobanteUrl.isNotEmpty)
+                      TextButton.icon(
+                        icon: const Icon(Icons.receipt, size: 16),
+                        label: const Text('Ver comprobante',
+                            style: TextStyle(fontSize: 12)),
+                        onPressed: () {
+                          showDialog(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text('Comprobante de Pago'),
+                              content: Image.network(
+                                payment.comprobanteUrl,
+                                fit: BoxFit.contain,
+                                errorBuilder: (_, __, ___) => const Center(
+                                  child: Text(
+                                      'No se pudo previsualizar el comprobante'),
+                                ),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx),
+                                  child: const Text('Cerrar'),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      )
+                    else
+                      const SizedBox.shrink(),
+                    if (isPending)
+                      Row(
+                        children: [
+                          OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.redAccent,
+                              side: const BorderSide(color: Colors.redAccent),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            child: const Text('Rechazar',
+                                style: TextStyle(fontSize: 12)),
+                            onPressed: () => widget.onUpdatePaymentStatus(
+                                payment, 'Rechazado'),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            child: const Text('Aprobar',
+                                style: TextStyle(fontSize: 12)),
+                            onPressed: () => widget.onUpdatePaymentStatus(
+                                payment, 'Verificado'),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
               ],
             ),
           ),

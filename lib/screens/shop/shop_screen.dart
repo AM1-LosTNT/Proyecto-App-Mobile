@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -156,7 +157,10 @@ class _ProductCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cart = context.watch<CartProvider>();
-    final inCart = cart.items.containsKey(product.id);
+    final cartItem = cart.items[product.id];
+    final inCart = cartItem != null;
+    final quantityInCart = cartItem?.quantity ?? 0;
+    final isOutOfStock = product.stock <= 0;
 
     return Container(
       decoration: BoxDecoration(
@@ -194,11 +198,13 @@ class _ProductCard extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.65),
+                        color: isOutOfStock
+                            ? Colors.red.withValues(alpha: 0.85)
+                            : Colors.black.withValues(alpha: 0.65),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        'Stock: ${product.stock}',
+                        isOutOfStock ? 'Agotado' : 'Stock: ${product.stock}',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 10,
@@ -242,48 +248,135 @@ class _ProductCard extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Bs. ${product.precio.toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w900,
-                        fontSize: 14,
-                        color: AppTheme.primaryColor,
+                    Expanded(
+                      child: Text(
+                        'Bs. ${product.precio.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                          color: AppTheme.primaryColor,
+                        ),
                       ),
                     ),
-                    InkWell(
-                      onTap: () {
-                        cart.addItem(product);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('¡${product.nombre} añadido al carrito!'),
-                            duration: const Duration(seconds: 1),
-                            behavior: SnackBarBehavior.floating,
-                            action: SnackBarAction(
-                              label: 'Ver',
-                              textColor: Colors.amber,
-                              onPressed: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(builder: (_) => const CartScreen()),
+                    if (inCart)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: AppTheme.primaryColor.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            InkWell(
+                              onTap: () => cart.removeSingleItem(product.id),
+                              borderRadius: BorderRadius.circular(16),
+                              child: const Padding(
+                                padding: EdgeInsets.all(4),
+                                child: Icon(
+                                  Icons.remove,
+                                  size: 15,
+                                  color: AppTheme.primaryColor,
+                                ),
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              child: Text(
+                                '$quantityInCart',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                  color: AppTheme.primaryColor,
+                                ),
+                              ),
+                            ),
+                            InkWell(
+                              onTap: () {
+                                if (quantityInCart < product.stock) {
+                                  cart.addItem(product);
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('No hay más stock disponible'),
+                                      duration: Duration(seconds: 1),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                }
+                              },
+                              borderRadius: BorderRadius.circular(16),
+                              child: const Padding(
+                                padding: EdgeInsets.all(4),
+                                child: Icon(
+                                  Icons.add,
+                                  size: 15,
+                                  color: AppTheme.primaryColor,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else
+                      InkWell(
+                        onTap: isOutOfStock
+                            ? null
+                            : () {
+                                cart.addItem(product);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('¡${product.nombre} añadido!'),
+                                    duration: const Duration(seconds: 1),
+                                    behavior: SnackBarBehavior.floating,
+                                    action: SnackBarAction(
+                                      label: 'Ver carrito',
+                                      textColor: Colors.amber,
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute(builder: (_) => const CartScreen()),
+                                        );
+                                      },
+                                    ),
+                                  ),
                                 );
                               },
-                            ),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: isOutOfStock
+                                ? Colors.grey.shade300
+                                : AppTheme.primaryColor,
+                            borderRadius: BorderRadius.circular(8),
                           ),
-                        );
-                      },
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: inCart ? AppTheme.primaryColor : Colors.grey.shade100,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(
-                          inCart ? Icons.check : Icons.add_shopping_cart,
-                          size: 18,
-                          color: inCart ? Colors.white : Colors.black87,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.add_shopping_cart,
+                                size: 14,
+                                color: isOutOfStock
+                                    ? Colors.grey.shade600
+                                    : Colors.white,
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                'Añadir',
+                                style: TextStyle(
+                                  color: isOutOfStock
+                                      ? Colors.grey.shade600
+                                      : Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
                   ],
                 ),
               ],

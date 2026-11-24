@@ -132,30 +132,29 @@ class _LoginScreenState extends State<LoginScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Icono / Logo
+                  // Logo Oficial TurisApp
                   Center(
                     child: Container(
-                      width: 85,
-                      height: 85,
+                      width: 130,
+                      height: 130,
                       decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [AppTheme.primaryColor, AppTheme.primaryLight],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
                         borderRadius: BorderRadius.circular(24),
                         boxShadow: [
                           BoxShadow(
-                            color: AppTheme.primaryColor.withValues(alpha: 0.3),
-                            blurRadius: 15,
+                            color: Colors.black.withValues(alpha: 0.08),
+                            blurRadius: 20,
                             offset: const Offset(0, 8),
                           ),
                         ],
                       ),
-                      child: const Icon(
-                        Icons.travel_explore_rounded,
-                        size: 48,
-                        color: Colors.white,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: Image.asset(
+                          'assets/images/logo.png',
+                          width: 130,
+                          height: 130,
+                          fit: BoxFit.contain,
+                        ),
                       ),
                     ),
                   ),

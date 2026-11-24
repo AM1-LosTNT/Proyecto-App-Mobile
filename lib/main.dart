@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'providers/app_state.dart';
 import 'providers/cart_provider.dart';
+import 'config/supabase_config.dart';
 import 'screens/auth/auth_gate.dart';
 import 'theme/app_theme.dart';
 
@@ -12,8 +13,8 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(
-    url: 'https://ewpggamtdzziplibpabv.supabase.co',
-    publishableKey: 'sb_publishable_cV-Zs3q_NSlm5b_IehTAJQ_p8t9iUnz',
+    url: SupabaseConfig.url,
+    publishableKey: SupabaseConfig.anonKey,
   );
 
   runApp(const TurisApp());

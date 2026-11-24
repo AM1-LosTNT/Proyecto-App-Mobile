@@ -7,6 +7,7 @@ import '../models/place_model.dart';
 import '../models/reserva.dart';
 import '../models/user_profile.dart';
 import '../services/supabase_service.dart';
+import '../services/yape_notification_service.dart';
 
 class AppState extends ChangeNotifier {
   final SupabaseService service = SupabaseService();
@@ -60,6 +61,10 @@ class AppState extends ChangeNotifier {
 
     _initialized = true;
     notifyListeners();
+
+    // Mantiene sincronizada la sesión del listener nativo de Yape.
+    await YapeNotificationService()
+        .syncNativeSession(isAdmin: _profile?.isAdmin ?? false);
   }
 
   Future<void> _handleAuthChange(AuthState state) async {
@@ -70,11 +75,18 @@ class AppState extends ChangeNotifier {
       _misReservas = [];
       _reservasNegocio = [];
       notifyListeners();
+      await YapeNotificationService().syncNativeSession(isAdmin: false);
       return;
     }
 
     final newUser = state.session?.user;
     if (newUser == null) return;
+
+    if (state.event == AuthChangeEvent.tokenRefreshed) {
+      await YapeNotificationService()
+          .syncNativeSession(isAdmin: _profile?.isAdmin ?? false);
+      return;
+    }
 
     final isNewLogin = _user?.id != newUser.id ||
         state.event == AuthChangeEvent.signedIn ||
@@ -84,6 +96,8 @@ class AppState extends ChangeNotifier {
       _user = newUser;
       await _loadUserData();
       notifyListeners();
+      await YapeNotificationService()
+          .syncNativeSession(isAdmin: _profile?.isAdmin ?? false);
     }
   }
 
@@ -160,6 +174,8 @@ class AppState extends ChangeNotifier {
   Future<void> refreshAll() async {
     if (_user != null) {
       await _loadUserData();
+      await YapeNotificationService()
+          .syncNativeSession(isAdmin: _profile?.isAdmin ?? false);
     } else {
       await _loadPublicData();
       notifyListeners();
