@@ -247,13 +247,15 @@ begin
      limit 1
      for update skip locked;
 
-    -- Intento 2: REGLA PRINCIPAL — solo por monto exacto.
+    -- Intento 2: REGLA PRINCIPAL — solo por monto solicitado.
+    -- Si el usuario envió un monto igual o mayor al solicitado, se considera pagado.
+    -- Esto permite pagos desde cuentas Yape con distinto nombre y tolera pequeñas variaciones.
     if v_id is null then
         select id into v_id
           from public.pagos_qr
          where estado = 'PENDIENTE'
            and expira_en > now()
-           and abs(monto_esperado - p_monto) < 0.01
+           and p_monto >= monto_esperado  -- CAMBIO: antes era abs(monto_esperado - p_monto) < 0.01
          order by creado_en asc
          limit 1
          for update skip locked;

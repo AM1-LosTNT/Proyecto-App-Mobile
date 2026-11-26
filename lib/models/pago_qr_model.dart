@@ -60,7 +60,26 @@ class PagoQrModel {
       isPagado &&
       (confirmadoAutomaticamente || origenConfirmacion == 'NOTIFICACION');
 
-  /// `true` si el admin lo marcó a mano (respaldo).
+  /// Estado visual para la interfaz de usuario.
+  /// - 'PENDIENTE' cuando no hay notificación aún.
+  /// - 'Validando' (color azul) cuando se detectó la notificación y se está
+  ///   validando automáticamente por monto exacto (sin saldos).
+  /// - 'PAGADO' (verde) cuando el pago ya fue completado.
+  /// - 'EXPIRADO' / 'RECHAZADO' según corresponda.
+  String get estadoVisual {
+    if (isPagado) return 'PAGADO';
+    if (confirmadoAutomaticamente && pagadoEn != null && _tiempoDesdePagadoEnMenosDe(3)) {
+      return 'Validando...';
+    }
+    return estado;
+  }
+
+  bool _tiempoDesdePagadoEnMenosDe(int segundos) {
+    if (pagadoEn == null) return false;
+    final diff = DateTime.now().difference(pagadoEn!).inSeconds;
+    return diff.abs() <= segundos;
+  }
+
   bool get isPagadoManual =>
       isPagado && origenConfirmacion == 'ADMIN' && !confirmadoAutomaticamente;
 
