@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/app_error.dart';
 import '../../models/cart_item.dart';
 import '../../models/order_model.dart';
+import '../../providers/app_state.dart';
 import '../../providers/cart_provider.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
@@ -350,8 +351,6 @@ class _CheckoutSheet extends StatefulWidget {
 }
 
 class _CheckoutSheetState extends State<_CheckoutSheet> {
-  final _direccion = TextEditingController();
-  final _telefono = TextEditingController();
   final _notas = TextEditingController();
 
   bool _sending = false;
@@ -362,8 +361,6 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
 
   @override
   void dispose() {
-    _direccion.dispose();
-    _telefono.dispose();
     _notas.dispose();
     super.dispose();
   }
@@ -371,26 +368,21 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
 
-    if (_direccion.text.trim().isEmpty) {
-      setState(() => _error = 'Escribe la dirección donde recibirás tu pedido.');
-      return;
-    }
-    if (_telefono.text.trim().length < 6) {
-      setState(() => _error = 'Ingresa un teléfono de contacto válido.');
-      return;
-    }
-
     setState(() {
       _sending = true;
       _error = null;
     });
 
     try {
+      final appState = context.read<AppState>();
+      final telefono = appState.profile?.telefono ?? '';
+      final direccion = 'Dirección de perfil';
+
       final order = await SupabaseService().crearPedido(
         items: widget.items,
-        direccionEntrega: _direccion.text,
-        telefonoContacto: _telefono.text,
-        notas: _notas.text,
+        direccionEntrega: direccion,
+        telefonoContacto: telefono,
+        notas: _notas.text.trim(),
       );
       if (!mounted) return;
       Navigator.pop(context, order);
@@ -408,6 +400,12 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
+    final nombreCliente = appState.displayName.isNotEmpty
+        ? appState.displayName
+        : (appState.profile?.nombre ?? 'Usuario');
+    final telefonoCliente = appState.profile?.telefono ?? '';
+
     return Container(
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -450,30 +448,61 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
               ),
             ),
             const SizedBox(height: 16),
-            TextField(
-              controller: _direccion,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(
-                labelText: 'Dirección de entrega',
-                prefixIcon: Icon(Icons.location_on_outlined),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppTheme.primaryColor.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: AppTheme.primaryColor.withValues(alpha: 0.15),
+                ),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor:
+                        AppTheme.primaryColor.withValues(alpha: 0.12),
+                    child: const Icon(
+                      Icons.person_rounded,
+                      color: AppTheme.primaryColor,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          nombreCliente,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          telefonoCliente.isNotEmpty
+                              ? 'Teléfono registrado: $telefonoCliente'
+                              : 'Datos extraídos de tu cuenta',
+                          style: const TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _telefono,
-              keyboardType: TextInputType.phone,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(
-                labelText: 'Teléfono de contacto',
-                prefixIcon: Icon(Icons.phone_outlined),
-              ),
-            ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             TextField(
               controller: _notas,
               maxLines: 2,
               decoration: const InputDecoration(
-                labelText: 'Notas (opcional)',
+                labelText: 'Notas para la entrega (opcional)',
+                hintText: 'Ej. Entregar en portería, coordinar por WhatsApp...',
                 prefixIcon: Icon(Icons.notes_rounded),
               ),
             ),
@@ -489,7 +518,7 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text(
-                  'Total',
+                  'Total a pagar',
                   style: TextStyle(fontWeight: FontWeight.w600),
                 ),
                 Text(
@@ -505,26 +534,33 @@ class _CheckoutSheetState extends State<_CheckoutSheet> {
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
-              child: ElevatedButton(
+              child: ElevatedButton.icon(
                 onPressed: _sending ? null : _submit,
-                child: _sending
+                icon: _sending
                     ? const SizedBox(
-                        width: 20,
-                        height: 20,
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           color: Colors.white,
                         ),
                       )
-                    : const Text('Confirmar pedido'),
+                    : const Icon(Icons.qr_code_2_rounded),
+                label: Text(
+                  _sending
+                      ? 'Procesando...'
+                      : 'Continuar al pago QR (Bs. ${_total.toStringAsFixed(2)})',
+                ),
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Al confirmar se generará tu código de referencia para el pago por QR.',
-              style: TextStyle(
-                fontSize: 11.5,
-                color: AppTheme.textSecondary,
+            const Center(
+              child: Text(
+                'Al continuar verás el QR para pagar con Yape.',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: AppTheme.textSecondary,
+                ),
               ),
             ),
           ],

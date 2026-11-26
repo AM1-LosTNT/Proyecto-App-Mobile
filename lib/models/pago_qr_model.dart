@@ -1,6 +1,7 @@
 class PagoQrModel {
   final String id;
   final String? usuarioId;
+  final String? usuarioNombre;
   final String? idPedido;
   final String? idReserva;
   final String referenciaInterna;
@@ -23,6 +24,7 @@ class PagoQrModel {
   PagoQrModel({
     required this.id,
     this.usuarioId,
+    this.usuarioNombre,
     this.idPedido,
     this.idReserva,
     required this.referenciaInterna,
@@ -69,6 +71,7 @@ class PagoQrModel {
     return PagoQrModel(
       id: map['id']?.toString() ?? '',
       usuarioId: map['usuario_id']?.toString(),
+      usuarioNombre: map['usuario_nombre']?.toString(),
       idPedido: map['id_pedido']?.toString(),
       idReserva: map['id_reserva']?.toString(),
       referenciaInterna: map['referencia_interna'] ?? '',
@@ -100,6 +103,7 @@ class PagoQrModel {
     return {
       'id': id,
       'usuario_id': usuarioId,
+      'usuario_nombre': usuarioNombre,
       'id_pedido': idPedido,
       'id_reserva': idReserva,
       'referencia_interna': referenciaInterna,

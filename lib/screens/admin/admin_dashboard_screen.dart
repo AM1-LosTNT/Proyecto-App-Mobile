@@ -2202,6 +2202,17 @@ class _OrdersPaymentsTabState extends State<_OrdersPaymentsTab> {
                 color: AppTheme.primaryColor,
               ),
             ),
+            if (pago.usuarioNombre != null && pago.usuarioNombre!.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                'Cliente registrado: ${pago.usuarioNombre}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ],
             if (pago.glosa != null && pago.glosa!.isNotEmpty) ...[
               const SizedBox(height: 2),
               Text(
@@ -2295,9 +2306,17 @@ class _OrdersPaymentsTabState extends State<_OrdersPaymentsTab> {
   }
 
   void _mostrarDialogoSimularNotificacion(BuildContext context) {
-    final remitente = TextEditingController(text: 'Juan Pérez (Yape)');
+    final primerPendiente =
+        widget.pagosQr.where((p) => p.isPendiente).firstOrNull;
+    final nombreSugerido = primerPendiente?.usuarioNombre ?? 'Juan Pérez';
+    final montoSugerido = primerPendiente != null
+        ? primerPendiente.montoEsperado.toStringAsFixed(2)
+        : '25.00';
+
+    final remitente = TextEditingController(text: '$nombreSugerido (Yape)');
     final texto = TextEditingController(
-      text: '¡Te yapearon Bs 25.00! Juan Pérez te envió un pago en Yape.',
+      text:
+          '¡Te yapearon Bs $montoSugerido! $nombreSugerido te envió un pago en Yape.',
     );
 
     showDialog(
