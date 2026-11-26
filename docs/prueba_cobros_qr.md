@@ -56,6 +56,27 @@ Este script deja todo en un estado conocido y corrige los problemas anteriores:
 > ⚠️ No ejecutes `supabase/validador_yape_nombre_monto.sql`: está obsoleto y
 > volvería a exigir el nombre.
 
+### 1.1 Permisos del admin para ver los pedidos (obligatorio)
+
+Si el panel admin muestra **`Pedidos (0)`** aunque el pedido exista en la base de
+datos y el cliente sí lo vea en **Mis pedidos**, faltan las políticas RLS de
+admin sobre `pedidos` y `detalle_pedidos`.
+
+1. SQL Editor → New query.
+2. Pega **todo** el contenido de:
+
+   ```
+   supabase/parche_admin_pedidos.sql
+   ```
+
+3. Pulsa **Run**.
+4. El script es idempotente: agrega `es_admin()` a las políticas de lectura y
+   actualización de `pedidos`, `detalle_pedidos` y `pagos_historial`.
+
+> No toca ni borra pedidos. Solo permite que el admin los vea.
+> La pestaña `Pedidos` ahora muestra además el estado del **vigilador de Yape**
+> y el cobro QR asociado a cada pedido.
+
 ---
 
 ## 2. Verificar la infraestructura (SQL Editor)
@@ -571,6 +592,9 @@ Marca cada punto cuando lo compruebes:
 
 - [ ] Parche aplicado (`es_admin()` = `false` sin sesión)
 - [ ] `supabase/pago_automatico.sql` aplicado (las 3 funciones existen)
+- [ ] `supabase/parche_admin_pedidos.sql` aplicado (admin ve los pedidos)
+- [ ] El admin ve el pedido en **Pedidos & Pagos → Pedidos** (no `(0)`)
+- [ ] El pedido muestra su cobro QR asociado y el vigilador **ACTIVO**
 - [ ] Buckets de Storage existen
 - [ ] QR de Bs 0 subido y visible en la app del cliente
 - [ ] Acceso a notificaciones concedido

@@ -40,6 +40,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Timer? _pagosPoll;
   final _yapeService = YapeNotificationService();
 
+  /// Evita repetir el aviso de error de pedidos en cada refresco.
+  DateTime? _lastOrdersErrorSnack;
+
   @override
   void initState() {
     super.initState();
@@ -82,8 +85,24 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Future<void> _reloadOrders() async {
     try {
       final orders = await _service.adminGetAllOrders();
-      if (mounted) setState(() => _orders = orders);
-    } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _orders = orders;
+        });
+      }
+    } catch (e) {
+      // Antes se ignoraba el error y el admin veía "Pedidos (0)" sin saber por
+      // qué. Ahora se avisa una vez por minuto para no llenar la pantalla.
+      final now = DateTime.now();
+      final last = _lastOrdersErrorSnack;
+      if (last == null || now.difference(last) > const Duration(minutes: 1)) {
+        _lastOrdersErrorSnack = now;
+        _snack(
+          'No se pudieron cargar los pedidos: $e\n'
+          'Ejecuta supabase/parche_admin_pedidos.sql si persiste.',
+        );
+      }
+    }
   }
 
   @override
@@ -94,35 +113,57 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     super.dispose();
   }
 
+  /// Carga un futuro y, si falla, devuelve un valor vacío en lugar de tumbar
+  /// toda la pantalla. Así un problema puntual (p. ej. RLS de pedidos) no deja
+  /// el panel completo en blanco.
+  Future<T> _safe<T>(Future<T> future, T fallback) async {
+    try {
+      return await future;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   Future<void> _loadAll() async {
     setState(() => _loading = true);
-    try {
-      final results = await Future.wait<dynamic>([
-        _service.adminGetUsers(),
-        _service.getDestinos(includeInactive: true),
-        _service.getCategorias(),
-        _service.getAllReservas(),
-        _service.adminGetProducts(includeInactive: true),
-        _service.adminGetAllOrders(),
-        _service.adminGetAllPayments(),
-        _service.adminGetAllPagosQr(),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _users = results[0] as List<AppUserProfile>;
-        _places = results[1] as List<DestinoLugar>;
-        _categorias = results[2] as List<CategoriaItem>;
-        _reservas = results[3] as List<Reserva>;
-        _products = results[4] as List<ProductModel>;
-        _orders = results[5] as List<OrderModel>;
-        _payments = results[6] as List<PaymentRecordModel>;
-        _pagosQr = results[7] as List<PagoQrModel>;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      _snack('No se pudieron cargar los datos: $e');
+
+    Object? ordersError;
+    final results = await Future.wait<dynamic>([
+      _safe(_service.adminGetUsers(), <AppUserProfile>[]),
+      _safe(_service.getDestinos(includeInactive: true), <DestinoLugar>[]),
+      _safe(_service.getCategorias(), <CategoriaItem>[]),
+      _safe(_service.getAllReservas(), <Reserva>[]),
+      _safe(_service.adminGetProducts(includeInactive: true), <ProductModel>[]),
+      () async {
+        try {
+          return await _service.adminGetAllOrders();
+        } catch (e) {
+          ordersError = e;
+          return <OrderModel>[];
+        }
+      }(),
+      _safe(_service.adminGetAllPayments(), <PaymentRecordModel>[]),
+      _safe(_service.adminGetAllPagosQr(), <PagoQrModel>[]),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _users = results[0] as List<AppUserProfile>;
+      _places = results[1] as List<DestinoLugar>;
+      _categorias = results[2] as List<CategoriaItem>;
+      _reservas = results[3] as List<Reserva>;
+      _products = results[4] as List<ProductModel>;
+      _orders = results[5] as List<OrderModel>;
+      _payments = results[6] as List<PaymentRecordModel>;
+      _pagosQr = results[7] as List<PagoQrModel>;
+      _loading = false;
+    });
+
+    if (ordersError != null) {
+      _snack(
+        'No se pudieron cargar los pedidos: $ordersError\n'
+        'Ejecuta supabase/parche_admin_pedidos.sql si persiste.',
+      );
     }
   }
 
@@ -1883,7 +1924,7 @@ class _OrdersPaymentsTabState extends State<_OrdersPaymentsTab> {
         ),
         Expanded(
           child: _subTabIndex == 0
-              ? _buildOrdersList()
+              ? _buildOrdersTab()
               : _subTabIndex == 1
                   ? _buildPaymentsList()
                   : _buildYapeQrList(),
@@ -2376,6 +2417,137 @@ class _OrdersPaymentsTabState extends State<_OrdersPaymentsTab> {
     );
   }
 
+  /// Cobro QR asociado a un pedido (si existe).
+  PagoQrModel? _pagoDePedido(String idPedido) {
+    for (final pago in widget.pagosQr) {
+      if (pago.idPedido != null && pago.idPedido == idPedido) return pago;
+    }
+    return null;
+  }
+
+  /// Banner compacto con el estado del vigilador de notificaciones de Yape.
+  Widget _buildEscuchaBanner() {
+    final yapeService = YapeNotificationService();
+    return ListenableBuilder(
+      listenable: yapeService,
+      builder: (context, _) {
+        final escucha = yapeService.escuchaActiva;
+        final acceso = yapeService.nativeAccessGranted;
+        final pendientes =
+            widget.pagosQr.where((p) => p.isPendiente).length;
+
+        return Container(
+          margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: escucha ? Colors.green.shade50 : Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: escucha ? Colors.green.shade400 : Colors.grey.shade300,
+              width: 1.2,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                escucha
+                    ? Icons.notifications_active_rounded
+                    : Icons.notifications_off_outlined,
+                size: 18,
+                color:
+                    escucha ? Colors.green.shade700 : Colors.grey.shade600,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  escucha
+                      ? 'Vigilador de Yape ACTIVO · $pendientes cobro(s) pendiente(s)'
+                      : 'Vigilador de Yape en espera · sin cobros pendientes',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: escucha
+                        ? Colors.green.shade800
+                        : Colors.grey.shade700,
+                  ),
+                ),
+              ),
+              if (!acceso)
+                Tooltip(
+                  message: 'Falta el permiso de acceso a notificaciones',
+                  child: Icon(
+                    Icons.warning_amber_rounded,
+                    size: 18,
+                    color: Colors.orange.shade800,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildOrdersTab() {
+    return Column(
+      children: [
+        _buildEscuchaBanner(),
+        Expanded(child: _buildOrdersList()),
+      ],
+    );
+  }
+
+  Widget _buildPagoEstadoChip(PagoQrModel pago) {
+    Color color;
+    String texto;
+    IconData icono;
+    if (pago.isPagado) {
+      color = Colors.green;
+      texto = pago.isPagadoAutomatico
+          ? 'Yape QR · PAGADO automáticamente'
+          : 'Yape QR · PAGADO';
+      icono = Icons.check_circle_rounded;
+    } else if (pago.isPendiente) {
+      color = Colors.orange;
+      texto = 'Yape QR · esperando transferencia';
+      icono = Icons.qr_code_2_rounded;
+    } else if (pago.isExpirado) {
+      color = Colors.grey;
+      texto = 'Yape QR · expirado';
+      icono = Icons.timer_off_rounded;
+    } else {
+      color = Colors.redAccent;
+      texto = 'Yape QR · ${pago.estado}';
+      icono = Icons.error_outline_rounded;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icono, size: 13, color: color),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              texto,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildOrdersList() {
     if (widget.orders.isEmpty) {
       return const Center(
@@ -2404,6 +2576,7 @@ class _OrdersPaymentsTabState extends State<_OrdersPaymentsTab> {
         }
 
         final isPending = order.estado.toLowerCase() == 'pendiente';
+        final pago = _pagoDePedido(order.id);
 
         return Card(
           margin: const EdgeInsets.only(bottom: 12),
@@ -2466,6 +2639,13 @@ class _OrdersPaymentsTabState extends State<_OrdersPaymentsTab> {
                   ],
                 ),
                 const SizedBox(height: 6),
+                if (pago != null) ...[
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: _buildPagoEstadoChip(pago),
+                  ),
+                  const SizedBox(height: 6),
+                ],
                 if (order.turistaNombre != null || order.turistaEmail != null)
                   Text(
                     'Cliente: ${order.turistaNombre ?? 'Usuario'} · ${order.turistaEmail ?? ''}',
