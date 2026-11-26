@@ -1,8 +1,8 @@
 # Prueba real de cobros con QR (Yape) — paso a paso
 
 > Esta guía valida el flujo **real**, sin simuladores: el cliente genera un cobro,
-> transfiere de verdad por Yape y **solo tú (admin)** confirmas el aumento de
-> saldo en banca.
+> transfiere de verdad por Yape y el pago se completa **automáticamente** con la
+> notificación. No se escribe ningún saldo.
 >
 > Configuración previa del sistema: [`docs/cobros_yape_qr.md`](./cobros_yape_qr.md)
 
@@ -12,8 +12,8 @@
 
 | Requisito | Detalle |
 |---|---|
-| SQL ejecutado | `supabase/cobros_yape_qr.sql` (ya lo ejecutaste) |
-| **Parche aplicado** | `supabase/parche_cobros_qr.sql` → **obligatorio**, ver paso 1 |
+| SQL ejecutado | `supabase/cobros_yape_qr.sql` |
+| **Script de pago automático** | `supabase/pago_automatico.sql` → **obligatorio**, ver paso 1 |
 | App instalada | `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk` en **dos teléfonos** |
 | Cuenta admin | `christopherlotoreherrera@gmail.com` (rol `admin`) |
 | Segunda cuenta Yape | De un familiar o amigo, con saldo para enviar **Bs 0.10** |
@@ -26,14 +26,16 @@
 
 ---
 
-## 1. Aplicar el parche de seguridad (TU TURNO — 2 minutos)
+## 1. Aplicar el script de pago automático (TU TURNO — 2 minutos)
 
-El 24/11/2026 se detectaron dos fallos en el script original:
+Este script deja todo en un estado conocido y corrige los problemas anteriores:
 
 1. `es_admin()` devolvía `NULL` para usuarios sin sesión y la comprobación
    `if not es_admin()` se saltaba → un anónimo podía confirmar pagos.
 2. El trigger escribía `reservas.estado = 'Confirmada'`, pero tu tabla usa
    estados en minúsculas (`aceptada`) → confirmar un pago de reserva fallaba.
+3. La validación exigía **monto + nombre** del cliente, y bloqueaba los pagos
+   hechos desde una cuenta Yape con otro nombre. Ahora valida por **monto**.
 
 **Pasos:**
 
@@ -41,13 +43,18 @@ El 24/11/2026 se detectaron dos fallos en el script original:
 2. Pega **todo** el contenido de:
 
    ```
-   supabase/parche_cobros_qr.sql
+   supabase/pago_automatico.sql
    ```
 
 3. Pulsa **Run**.
-4. Debe aparecer un resultado con la columna `es_admin_sin_sesion` = **`false`**.
+4. Debe aparecer un resultado con la columna `es_admin_sin_sesion` = **`false`**
+   y las 3 funciones (`crear_cobro_qr`, `validar_pago_por_notificacion`,
+   `confirmar_pago_qr`).
 
-> Si en lugar de `false` ves `null`, el parche no se aplicó: vuelve a ejecutarlo.
+> Si en lugar de `false` ves `null`, el script no se aplicó: vuelve a ejecutarlo.
+
+> ⚠️ No ejecutes `supabase/validador_yape_nombre_monto.sql`: está obsoleto y
+> volvería a exigir el nombre.
 
 ---
 
@@ -261,23 +268,25 @@ select escucha_activa from public.configuracion_cobros;
 - Llega la notificación de Yape al teléfono admin.
 - El `NotificationListenerService` la lee, verifica que hay escucha activa y que
   el monto coincide.
-- El cobro pasa a **`VALIDADO_NOTIF`** en segundos.
-- La pantalla del cliente cambia a:
-  **“¡Transferencia detectada en Yape!”**
-  *“Tu pago fue capturado por el sistema. El administrador está confirmando el
-  aumento de saldo en banca.”*
+- El cobro pasa **directo a `PAGADO`** en segundos. No hay paso intermedio ni
+  confirmación manual.
+- La pantalla del cliente cambia **sola** a la pantalla de pago completado:
+  **“¡Pago completado!”** con el check animado, el monto y la referencia.
+  No hay que refrescar nada.
 
 **Verificar**
 
 ```sql
 select referencia_interna, estado, monto_recibido, pagado_por,
-       notificacion_texto, evento_hash, pagado_en
+       notificacion_texto, evento_hash, pagado_en,
+       origen_confirmacion, confirmado_automaticamente
 from public.pagos_qr
 order by creado_en desc
 limit 1;
 ```
 
-→ `estado = 'VALIDADO_NOTIF'`, `monto_recibido = 0.10`,
+→ `estado = 'PAGADO'`, `monto_recibido = 0.10`,
+`origen_confirmacion = 'NOTIFICACION'`, `confirmado_automaticamente = true`,
 `notificacion_texto` contiene el texto real de Yape y `evento_hash` no es nulo.
 
 **Log del teléfono admin (USB)**
@@ -289,55 +298,38 @@ adb logcat -s YapeListener
 Debe aparecer:
 
 ```
-Cobro <uuid> validado por notificación de Bs 0.1
+¡Cobro <uuid> PAGADO exitosamente por Bs 0.1!
 ```
 
 ---
 
-### Paso 4 · El admin verifica el saldo en banca
+### Paso 4 · Verificación (opcional) del saldo en banca
 
-**Acción**
-1. Abre Yape/Banca y comprueba el saldo.
-2. Anota **saldo anterior** y **saldo nuevo**.
+Ya no hay que escribir ningún saldo. El pago queda completado solo con la
+notificación.
 
-Ejemplo: antes `150.00`, después `150.10`.
-
-**Resultado esperado**
-- La diferencia es exactamente **Bs 0.10**.
-
----
-
-### Paso 5 · El admin confirma el aumento de saldo
-
-**Acción**
-1. En el panel admin → `Yape QR`.
-2. En el cobro en estado `VALIDADO_NOTIF` pulsa
-   **“Confirmar Aumento de Saldo en Banca”**.
-3. En el diálogo **“Confirmar Aumento de Saldo”** escribe:
-   - Saldo anterior: `150.00`
-   - Saldo nuevo: `150.10`
-4. Confirma.
+**Acción (opcional)**
+1. Abre Yape/Banca y comprueba que el saldo subió exactamente **Bs 0.10**.
+2. En el panel admin → `Yape QR` el cobro ya aparece en **`PAGADO`** con el aviso
+   verde “Pago completado automáticamente por la notificación de Yape”.
 
 **Resultado esperado**
 
-- El diálogo muestra la diferencia `+ Bs 0.10` y valida que coincide.
-- El cobro pasa a **`PAGADO`**.
-- La pantalla del cliente muestra:
-  **“El saldo fue verificado por el administrador y tu compra ha sido confirmada.”**
-- El pedido pasa a **`Pagado`**.
+- La pantalla del cliente muestra **“¡Pago completado!”** con el check animado.
+- El pedido pasa a **`Pagado`** solo.
 - `escucha_activa` vuelve a **`false`** (ya no hay cobros pendientes).
 
 **Verificar**
 
 ```sql
 select p.referencia_interna, p.estado, p.monto_esperado, p.monto_recibido,
-       p.saldo_anterior, p.saldo_nuevo, p.validado_por_admin, p.pagado_en
+       p.origen_confirmacion, p.confirmado_automaticamente, p.pagado_en
 from public.pagos_qr p
 order by p.creado_en desc
 limit 1;
 ```
-→ `estado = 'PAGADO'`, `saldo_anterior = 150.00`, `saldo_nuevo = 150.10`,
-`validado_por_admin = 8d9b6019-10e9-464e-8a2f-e5ed41c9fce1`.
+→ `estado = 'PAGADO'`, `origen_confirmacion = 'NOTIFICACION'`,
+`confirmado_automaticamente = true`.
 
 ```sql
 select codigo_referencia, estado, updated_at
@@ -359,16 +351,22 @@ select id, estado from public.reservas order by id desc limit 3;
 ```
 → la reserva pasa a `aceptada` (minúsculas).
 
+**Respaldo manual (solo si la notificación no llegó)**
+
+En el panel admin, en el cobro `PENDIENTE`, pulsa
+**“Marcar como pagado (solo si no llegó la notificación)”**. Es un solo toque,
+sin escribir saldos.
+
 ---
 
-### Paso 6 · Comprobación visual final
+### Paso 5 · Comprobación visual final
 
 | Pantalla | Estado final esperado |
 |---|---|
-| Cliente | Banner verde “saldo verificado… compra confirmada” |
-| Admin · Yape QR | Cobro en `PAGADO` con saldos registrados |
+| Cliente | Pantalla “¡Pago completado!” con check animado |
+| Admin · Yape QR | Cobro en `PAGADO` con aviso verde automático |
 | Admin · Pedidos | Pedido en `Pagado` |
-| Supabase | `pagos_qr.estado = PAGADO`, `configuracion_cobros.escucha_activa = false` |
+| Supabase | `pagos_qr.estado = PAGADO`, `confirmado_automaticamente = true`, `escucha_activa = false` |
 
 ---
 
@@ -382,26 +380,28 @@ select id, estado from public.reservas order by id desc limit 3;
         notificación│ PENDIENTE │  (expira en 10 min)
         real de Yape└─────┬─────┘
                           │
-              ┌───────────┼────────────────┐
-              ▼           │                ▼
-      VALIDADO_NOTIF      │            EXPIRADO
-              │           │        (pg_cron / consulta)
-              │  confirmar_pago_qr (solo admin + saldo exacto)
-              ▼           │
-          ┌────────┐      │
-          │ PAGADO │◄─────┘ (nunca directo desde el cliente)
-          └────────┘
+                          │ validar_pago_por_notificacion
+                          │ (monto exacto → PAGADO)
+                          ▼
+                     ┌────────┐
+                     │ PAGADO │
+                     └────────┘
 
-  PENDIENTE ──► RECHAZADO   (cuando se crea un cobro nuevo del mismo pedido)
+  PENDIENTE ──► EXPIRADO    (pg_cron, 10 min sin pago)
+  PENDIENTE ──► RECHAZADO   (se crea un cobro nuevo del mismo pedido)
+  PENDIENTE ──► PAGADO      (respaldo manual del admin, un toque)
 ```
 
 | Estado | Quién lo produce | Significado |
 |---|---|---|
 | `PENDIENTE` | Cliente (`crear_cobro_qr`) | Esperando la transferencia |
-| `VALIDADO_NOTIF` | Listener nativo (notificación Yape) | Se detectó el monto |
-| `PAGADO` | **Solo admin** (`confirmar_pago_qr`) | Saldo verificado en banca |
+| `PAGADO` | Listener nativo (`validar_pago_por_notificacion`) | Notificación con el monto exacto |
+| `PAGADO` | Admin (`confirmar_pago_qr`, respaldo) | Marcado a mano si no llegó la notificación |
 | `EXPIRADO` | `pg_cron` / `expirar_cobros_vencidos()` | Pasaron 10 minutos |
 | `RECHAZADO` | `crear_cobro_qr` | Reemplazado por un intento nuevo |
+
+> `VALIDADO_NOTIF` ya no se usa: era el paso intermedio que obligaba a escribir
+> saldos. Los cobros viejos en ese estado se migran a `PAGADO`.
 
 ---
 
@@ -439,16 +439,16 @@ En el SQL Editor (sin sesión) ejecuta:
 
 ```sql
 select public.confirmar_pago_qr(
-  (select id from public.pagos_qr order by creado_en desc limit 1),
-  100.00,
-  100.10
+  (select id from public.pagos_qr order by creado_en desc limit 1)
 );
 ```
 
 **Esperado:** error
-`Solo el administrador puede confirmar el aumento de saldo.`
+`Solo el administrador puede confirmar el pago.`
 
-> Este era el fallo del parche: antes devolvía “El cobro no existe” y continuaba.
+> Lo mismo aplica a `validar_pago_por_notificacion`: sin sesión admin responde
+> `Sesión requerida para validar un pago.` o
+> `Solo el administrador puede validar pagos con notificaciones.`
 
 ### 7.4 El cliente NO puede marcar su pago como PAGADO
 
@@ -456,12 +456,17 @@ La política RLS `Solo admin actualiza pagos` impide el `UPDATE` directo desde
 la app del cliente. Si se intenta por fuera, Supabase responde con 0 filas
 afectadas / error de RLS.
 
-### 7.5 Saldo que no coincide
+### 7.5 Un nombre distinto en Yape NO bloquea el pago
 
-En el diálogo de confirmación escribe `150.00 → 150.50` para un cobro de `0.10`.
+Este era el fallo del script anterior (exigía nombre + monto). Con la regla
+actual:
 
-**Esperado:** error
-`El incremento de saldo (Bs. 0.50) no coincide con el monto del cobro (Bs. 0.10).`
+1. Genera un cobro con la cuenta de TurisApp de `Christopher`.
+2. Transfiere desde la cuenta Yape de otra persona (por ejemplo, un familiar).
+
+**Esperado:** el pago se completa igual, porque la validación es por **monto**.
+El nombre solo se usa como desempate si hubiera dos cobros pendientes del mismo
+monto.
 
 ### 7.6 Notificación duplicada
 
@@ -529,20 +534,19 @@ Mensajes y su significado:
 | `Escucha inactiva: se ignora la notificación.` | No hay cobro pendiente vigente |
 | `No hay cobro pendiente que coincida con Bs X` | El monto no coincide |
 | `Sesión expirada: abre TurisApp para renovarla.` | Token caducado |
-| `Cobro <id> validado por notificación de Bs X` | ✅ Funcionó |
+| `¡Cobro <id> PAGADO exitosamente por Bs X!` | ✅ Funcionó |
 
 Si el formato de tu notificación es distinto, **copia el texto exacto** que
 aparece en la barra de notificaciones y ajústalo: el detector acepta `Bs`,
 `Bs.`, `BOB`, `S/`, con coma (`0,10`) o punto (`0.10`), y como respaldo
 cualquier número decimal.
 
-### 8.4 Error al confirmar el saldo
+### 8.4 Error al confirmar el pago (respaldo manual)
 
 | Mensaje | Causa |
 |---|---|
-| `Solo el administrador...` | La cuenta no es admin o no aplicaste el parche |
+| `Solo el administrador...` | La cuenta no es admin o no aplicaste `pago_automatico.sql` |
 | `El cobro ya fue procesado` | Ya está `PAGADO`, `EXPIRADO` o `RECHAZADO` |
-| `El incremento de saldo... no coincide` | La resta de saldos ≠ monto |
 | `El cobro no existe` | UUID incorrecto |
 
 ### 8.5 El pedido no cambia a Pagado
@@ -566,18 +570,18 @@ where id = (select id_pedido from public.pagos_qr
 Marca cada punto cuando lo compruebes:
 
 - [ ] Parche aplicado (`es_admin()` = `false` sin sesión)
+- [ ] `supabase/pago_automatico.sql` aplicado (las 3 funciones existen)
 - [ ] Buckets de Storage existen
 - [ ] QR de Bs 0 subido y visible en la app del cliente
 - [ ] Acceso a notificaciones concedido
 - [ ] Batería sin restricciones
 - [ ] Cobro generado en `PENDIENTE`
 - [ ] `escucha_activa = true` al crear el cobro
-- [ ] Transferencia real de Bs 0.10 detectada → `VALIDADO_NOTIF`
-- [ ] Cliente ve “¡Transferencia detectada en Yape!”
-- [ ] Admin confirma saldo → `PAGADO`
+- [ ] Transferencia real de Bs 0.10 detectada → **`PAGADO`**
+- [ ] Cliente ve la pantalla “¡Pago completado!” con check animado
 - [ ] Pedido en `Pagado`
 - [ ] `escucha_activa = false` al terminar
-- [ ] `validado_por_admin` = tu UUID
+- [ ] `origen_confirmacion = 'NOTIFICACION'`
 - [ ] Un usuario sin sesión **no** puede confirmar (prueba 7.3)
 
 ---
@@ -634,6 +638,7 @@ where jobname = 'turisapp-expirar-cobros';
 ---
 
 **Resultado global esperado:** una transferencia real de Bs 0.10 queda
-registrada de principio a fin — detectada por la notificación de Yape, aprobada
-por ti con el saldo exacto, con el pedido marcado como `Pagado` y la escucha
-apagada automáticamente.
+registrada de principio a fin — detectada por la notificación de Yape, el cobro
+pasa solo a `PAGADO`, el cliente ve la pantalla animada de pago completado, el
+pedido queda en `Pagado` y la escucha se apaga automáticamente. Sin escribir
+saldos ni refrescar nada.

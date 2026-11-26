@@ -1,4 +1,17 @@
 -- ==============================================================================
+-- ⚠️  OBSOLETO — NO EJECUTAR ESTE ARCHIVO
+-- ==============================================================================
+-- Este script exigía que coincidieran MONTO + NOMBRE del cliente. Eso bloquea
+-- los pagos hechos desde una cuenta Yape con otro nombre (por ejemplo, un
+-- familiar) y fue la causa de que el pago no se validara.
+--
+-- La versión vigente y correcta es:
+--     supabase/pago_automatico.sql
+--
+-- Se conserva solo como referencia histórica.
+-- ==============================================================================
+
+-- ==============================================================================
 -- TURISAPP · VALIDACIÓN DE PAGO POR NOTIFICACIÓN: NOMBRE + MONTO
 -- ==============================================================================
 -- Ejecuta este script en Supabase → SQL Editor.

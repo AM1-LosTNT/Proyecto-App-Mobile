@@ -6,9 +6,10 @@ Sistema implementado en TurisApp para:
 2. Que el cliente escriba el monto exacto y genere el cobro.
 3. Activar la escucha de notificaciones **solo mientras existe un cobro PENDIENTE**
    (ahorro de batería y menos falsos positivos).
-4. Marcar el cobro como `VALIDADO_NOTIF` cuando llega la notificación real.
-5. Permitir que **solo el admin (tú)** confirme el aumento de saldo en banca
-   (`PAGADO`), con auditoría de saldo anterior/nuevo.
+4. Marcar el cobro **directo como `PAGADO`** cuando llega la notificación real
+   con el monto exacto. Sin confirmación manual ni registro de saldos.
+5. Mostrar al cliente una **pantalla animada de pago completado** en cuanto el
+   cobro se paga (Realtime, sin refrescar).
 
 ---
 
@@ -21,14 +22,14 @@ RPC crear_cobro_qr  ────────►  pagos_qr (PENDIENTE)  ◄──
                                 │ trigger                         (lee notificación Yape)
                                 ▼                                 │
                            escucha_activa = true                  ▼
-Muestra QR Bs 0      ◄──── Realtime ────  pagos_qr (VALIDADO_NOTIF)
-Espera 10 min                                             │
-                                                          ▼
-                             RPC confirmar_pago_qr ◄── Panel admin
-                                (valida rol admin + saldo)
+                                                          RPC validar_pago_por_notificacion
+                                                          (monto exacto → PAGADO)
                                 │
                                 ▼
                         pagos_qr (PAGADO) + pedido/reserva actualizados
+                                │
+                                ▼
+Muestra QR Bs 0      ◄──── Realtime ────  pantalla "¡Pago completado!"
 ```
 
 ### Decisiones importantes
@@ -165,11 +166,10 @@ Así el pedido real cuesta Bs 0,10 y no arriesgas dinero.
 3. Desde la segunda cuenta de Yape, escanea el QR que muestra la pantalla del
    cliente y envía **exactamente Bs 0.10**.
 4. En segundos, el teléfono admin recibe la notificación real de Yape; el
-   listener la valida y el cobro pasa a `VALIDADO_NOTIF`.
-   El cliente ve “Transferencia detectada en Yape”.
-5. Admin abre Yape/Banca y comprueba que el saldo subió exactamente Bs 0.10.
-   En el panel pulsa **Confirmar Aumento de Saldo en Banca**, ingresa saldo
-   anterior y nuevo → el cobro pasa a `PAGADO` y el pedido a **Pagado**.
+   listener la valida por **monto** y el cobro pasa **directo a `PAGADO`**.
+   El cliente ve la pantalla animada **“¡Pago completado!”** sin refrescar.
+5. El pedido pasa solo a **Pagado** y la escucha se apaga (`escucha_activa = false`).
+   No hay que escribir saldos ni confirmar nada.
 6. Borra o desactiva el producto `Prueba QR`.
 
 ### Si la transferencia real no se detecta
